@@ -52,7 +52,7 @@ export const flashCatalog = {
       default_service_tier: null,
       supports_reasoning_summaries: true,
       base_instructions:
-        "You are a coding assistant running in T3 Code. Complete the user's requested work and verify the real result. Use the T3 preview tools for the in-app browser, and t3_computer_use for explicitly controlled Chrome tabs and Windows apps. Inspect before acting. Cookie exports require the user's explicit click in Chrome. Preserve existing work and keep credentials out of output.",
+        "You are a coding assistant running in T3 Code. Complete the user's requested work and verify the real result. Use the T3 preview tools for the in-app browser, and Open Harness CUA (open_harness_cua) for explicitly controlled Chrome tabs and Windows apps. Inspect before acting. Cookie exports require the user's explicit click in Chrome. Preserve existing work and keep credentials out of output.",
     },
   ],
 };
@@ -133,14 +133,14 @@ export async function configureT3Cua({ root = repoRoot } = {}) {
     "requires_openai_auth = false",
     "supports_websockets = false",
     "",
-    "[mcp_servers.t3_computer_use]",
+    "[mcp_servers.open_harness_cua]",
     `command = ${toml(process.execPath)}`,
     `args = [${toml(path.join(root, "packages/computer-use/src/server.mjs"))}]`,
     "startup_timeout_sec = 20",
     "tool_timeout_sec = 60",
     "",
-    "[mcp_servers.t3_computer_use.env]",
-    `T3_COMPUTER_USE_HOME = ${toml(computerHome)}`,
+    "[mcp_servers.open_harness_cua.env]",
+    `OPEN_HARNESS_CUA_HOME = ${toml(computerHome)}`,
     "",
   ].join("\n");
   await writeOnce(path.join(codexHome, "config.toml"), config);
@@ -240,14 +240,14 @@ export async function configureLunaAccount({
       'model_reasoning_effort = "low"',
       `model_catalog_json = ${toml(path.join(lunaHome, "models.json"))}`,
       "",
-      "[mcp_servers.t3_computer_use]",
+      "[mcp_servers.open_harness_cua]",
       `command = ${toml(process.execPath)}`,
       `args = [${toml(path.join(root, "packages/computer-use/src/server.mjs"))}]`,
       "startup_timeout_sec = 20",
       "tool_timeout_sec = 60",
       "",
-      "[mcp_servers.t3_computer_use.env]",
-      `T3_COMPUTER_USE_HOME = ${toml(profile.computerHome)}`,
+      "[mcp_servers.open_harness_cua.env]",
+      `OPEN_HARNESS_CUA_HOME = ${toml(profile.computerHome)}`,
       "",
     ].join("\n"),
   );
@@ -294,7 +294,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const configured = process.argv.includes("--luna")
     ? await configureLunaAccount()
     : await configureT3Cua();
-  console.log(`T3 CuA profile ready: ${configured.t3Home}`);
+  console.log(`Open Harness CUA integration ready for T3 Code: ${configured.t3Home}`);
   if (configured.lunaHome)
     console.log(`Signed-in benchmark ready: ${configured.model}, low reasoning.`);
   else

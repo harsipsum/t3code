@@ -20,7 +20,7 @@ const child = spawn(
       T3CODE_DESKTOP_APP_USER_MODEL_ID: "dev.t3code.cua",
       T3CODE_DISABLE_AUTO_UPDATE: "1",
       T3CODE_DESKTOP_PROTOCOL_REGISTRATION_MANAGED: "1",
-      T3_COMPUTER_USE_HOME: profile.computerHome,
+      OPEN_HARNESS_CUA_HOME: profile.computerHome,
       T3_CUA_REPO_ROOT: repoRoot,
     },
   },

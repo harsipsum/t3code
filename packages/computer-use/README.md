@@ -1,8 +1,8 @@
-# T3 computer use
+# Open Harness CUA
 
-This fork adds a local stdio MCP server, an original Chrome extension/native host,
-and Windows window-targeted input. T3's existing `preview_*` tools provide the
-in-app browser; this package does not replace that browser.
+Open Harness CUA is a local stdio MCP server, an original Chrome extension/native
+host, and Windows window-targeted input. It connects to any MCP-capable harness.
+Its optional T3 integration uses T3's separate `preview_*` in-app browser tools.
 
 No npm dependency or new system runtime is required. Node 24 and Windows'
 existing PowerShell/.NET Framework provide the local host. Other operating
@@ -12,25 +12,25 @@ launcher; native desktop tools currently require Windows.
 ## Run
 
 Add the MCP server to your client, then start that client. For clients that use
-`mcpServers` JSON, copy this and replace `C:/path/to/t3code` with the absolute
+`mcpServers` JSON, copy this and replace `C:/path/to/checkout` with the absolute
 checkout path. If Node is installed elsewhere, replace its command path too:
 
 ```json
 {
   "mcpServers": {
-    "t3_computer_use": {
+    "open_harness_cua": {
       "command": "C:/Program Files/nodejs/node.exe",
-      "args": ["C:/path/to/t3code/packages/computer-use/src/server.mjs"],
+      "args": ["C:/path/to/checkout/packages/computer-use/src/server.mjs"],
       "env": {
-        "T3_COMPUTER_USE_HOME": "C:/path/to/t3code/.t3/computer-use"
+        "OPEN_HARNESS_CUA_HOME": "C:/path/to/checkout/.t3/computer-use"
       }
     }
   }
 }
 ```
 
-Use the same absolute `T3_COMPUTER_USE_HOME` for the client, native host and T3
-desktop instance. The fork's launcher configures this server in its isolated
+Use the same absolute `OPEN_HARNESS_CUA_HOME` for the client and native host, and
+for the desktop instance when using T3's importer. The fork's launcher configures this server in its isolated
 Codex home automatically. The standalone MCP server can also be run from the
 checkout root with `node packages/computer-use/src/server.mjs`; a plain terminal
 launch waits for MCP input and does not provide an interactive command prompt.
@@ -42,16 +42,20 @@ Its committed public key gives the stable ID `imnnjncafjnhhebhjkaoiobegpjahnhb`.
 Next, open PowerShell in the checkout root and install its native host once:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File packages/computer-use/install-host.ps1 -ExtensionId imnnjncafjnhhebhjkaoiobegpjahnhb -HomeDir "$PWD\.t3\computer-use"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File packages/computer-use/install-host.ps1 -ExtensionId imnnjncafjnhhebhjkaoiobegpjahnhb
 ```
+
+The installer uses `OPEN_HARNESS_CUA_HOME` from PowerShell, or the checkout's
+existing `.t3/computer-use` default. For a custom client home, pass the same absolute
+folder with `-HomeDir`; an explicit argument takes precedence.
 
 The installer writes only the selected home and
 `HKCU\Software\Google\Chrome\NativeMessagingHosts\dev.t3code.cua`. It refuses to
-overwrite a registration pointing to another T3 home. `-SkipRegistration`
+overwrite a registration pointing to another installation's home. `-SkipRegistration`
 compiles the launcher and manifest without changing Chrome's registry.
 
-Start a T3 thread or your configured MCP client so the local bridge is running.
-Open an HTTP(S) page, reopen **T3 Browser**, and choose **Allow this tab**. Its
+Start your configured MCP client so the local bridge is running.
+Open an HTTP(S) page, reopen **Open Harness CUA**, and choose **Allow this tab**. Its
 **First-time setup (Windows)** shows the same install command. If it still reports
 disconnected, check that the client and installer use the same computer-use home.
 The Chrome debugging banner remains visible. Access ends when the tab leaves its
@@ -68,12 +72,12 @@ Cancellation removes queued actions and stops before the next input when a
 command has already been delivered. It cannot undo an input already applied.
 The Windows helper stops its captured PowerShell process on cancellation.
 
-## Signed-in session import
+## Saved sessions and optional T3 import
 
-Use **Save this site's session for T3**. Chrome asks for cookie access for the
+Use **Save this site's session locally**. Chrome asks for cookie access for the
 current site. The extension saves applicable host and parent-domain cookies to
-`T3_COMPUTER_USE_HOME/chrome-session.json`, retaining Chrome's exact cookie fields.
-T3's browser-profile import reads that file. Cookie values never enter MCP tool
+`OPEN_HARNESS_CUA_HOME/chrome-session.json`, retaining Chrome's exact cookie fields.
+T3's browser-profile importer can read that file. Cookie values never enter MCP tool
 results or diagnostic logs. Once the popup grants permission, the current-site
 `chrome_export_session` tool can refresh the same export. All-sites export is a
 separate explicit popup action and permission request. Local storage is not
@@ -104,7 +108,7 @@ window's fresh bounds and rejects points outside it. Scroll without x/y uses the
 center. Other windows and the clipboard
 are not implicit targets.
 
-Set `T3_COMPUTER_USE_BROWSER_ONLY=1` to remove all native computer tools from
+Set `OPEN_HARNESS_CUA_BROWSER_ONLY=1` to remove all native computer tools from
 the MCP catalog and dispatch. This lets a browser agent run while someone is
 using the laptop.
 
@@ -112,17 +116,17 @@ using the laptop.
 
 This stdio server also works in Hermes's own model/tool loop. In an isolated
 Hermes profile with its account/model already configured, add this to `config.yaml`.
-Replace `C:/path/to/t3code` with your absolute checkout path and keep your existing
+Replace `C:/path/to/checkout` with your absolute checkout path and keep your existing
 account settings:
 
 ```yaml
 mcp_servers:
-  t3_computer_use:
+  open_harness_cua:
     command: C:/Program Files/nodejs/node.exe
     args:
-      - C:/path/to/t3code/packages/computer-use/src/server.mjs
+      - C:/path/to/checkout/packages/computer-use/src/server.mjs
     env:
-      T3_COMPUTER_USE_HOME: C:/path/to/t3code/.t3/computer-use
+      OPEN_HARNESS_CUA_HOME: C:/path/to/checkout/.t3/computer-use
     timeout: 45
 ```
 
@@ -130,17 +134,34 @@ Start Hermes using that isolated profile. On Windows, for example:
 
 ```powershell
 $env:HERMES_HOME = "C:/path/to/isolated-hermes-profile"
-hermes.cmd chat -t t3_computer_use -m gpt-5.6-luna --reasoning low --ignore-rules
+hermes.cmd chat -t open_harness_cua -m gpt-5.6-luna --reasoning low --ignore-rules
 ```
 
-For browser-only tasks, add `T3_COMPUTER_USE_BROWSER_ONLY: '1'` under that server's
+For browser-only tasks, add `OPEN_HARNESS_CUA_BROWSER_ONLY: '1'` under that server's
 `env` block. Leave it unset to include the Windows tools as well.
 
-Use `-t t3_computer_use`, the configured server name, on the Hermes CLI. Its
+Use `-t open_harness_cua`, the configured server name, on the Hermes CLI. Its
 startup filter matches that name before discovery registers the
-`mcp-t3_computer_use` alias. A prefixed selector can therefore prevent startup.
+`mcp-open_harness_cua` alias. A prefixed selector can therefore prevent startup.
 `--ignore-rules` excludes local instructions without removing the MCP config.
 Select the model and effort explicitly, such as `-m gpt-5.6-luna --reasoning low`.
+
+## Existing installations
+
+The product and MCP server are now `Open Harness CUA` / `open-harness-cua`.
+New examples use the client configuration key `open_harness_cua`; remove the old
+entry when renaming that key so the client does not start duplicate servers.
+Old client keys can continue pointing to the same server.
+
+`OPEN_HARNESS_CUA_HOME` and `OPEN_HARNESS_CUA_BROWSER_ONLY` take precedence over
+`T3_COMPUTER_USE_HOME` and `T3_COMPUTER_USE_BROWSER_ONLY` when defined. Likewise,
+each `OPEN_HARNESS_CUA_DECISION_*` setting falls back to its matching
+`T3_DECISION_MODEL_*` name. Explicit new `0` disables a flag even if the old name
+is `1`. An empty new home uses the unchanged checkout default.
+
+The stable extension ID, native-host wire name `dev.t3code.cua`, launcher filename
+and `.t3/computer-use` state path are historical compatibility identifiers. The
+rename does not move saved sessions or require a second native-host registration.
 
 ## Optional local action chooser
 
@@ -149,9 +170,9 @@ decision model exposing the typed `/v1/systemone` API, such as a compatible
 llama.cpp build with Clef. Add these values to the MCP server's environment:
 
 ```yaml
-T3_DECISION_MODEL_ENABLED: "1"
-T3_DECISION_MODEL_URL: http://127.0.0.1:8767/v1/systemone
-T3_DECISION_MODEL_ID: clef-flash
+OPEN_HARNESS_CUA_DECISION_ENABLED: "1"
+OPEN_HARNESS_CUA_DECISION_URL: http://127.0.0.1:8767/v1/systemone
+OPEN_HARNESS_CUA_DECISION_ID: clef-flash
 ```
 
 The measured Windows runtime uses the official [llama.cpp b11429 release](https://github.com/ggml-org/llama.cpp/releases/tag/b11429)
@@ -189,9 +210,9 @@ instead of silently dropping candidate actions. The endpoint accepts loopback HT
 only; there is no remote-model fallback. The routine has a 30-second deadline by
 default (`deadlineMs`, at most 60 seconds). Cancellation removes queued input.
 
-`T3_DECISION_MODEL_MAX_STATE_CHARS` bounds the entire decision payload (default
-6000), `T3_DECISION_MODEL_MAX_CANDIDATES` bounds its action menu (default 24), and
-`T3_DECISION_MODEL_MIN_CONFIDENCE` sets the abstention threshold (default 0.6).
+`OPEN_HARNESS_CUA_DECISION_MAX_STATE_CHARS` bounds the entire decision payload (default
+6000), `OPEN_HARNESS_CUA_DECISION_MAX_CANDIDATES` bounds its action menu (default 24), and
+`OPEN_HARNESS_CUA_DECISION_MIN_CONFIDENCE` sets the abstention threshold (default 0.6).
 The response records decision/action timings, supplied model token usage and the
 fresh final observation. These controls do not claim a speed or quality advantage;
 measure model memory, latency and real task outcomes before enabling it routinely.

@@ -4,7 +4,11 @@ param(
   [switch]$SkipRegistration
 )
 $ErrorActionPreference = 'Stop'
-if (-not $HomeDir) { $HomeDir = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) '.t3\computer-use' }
+if (-not $HomeDir) {
+  $configuredHome = [Environment]::GetEnvironmentVariable('OPEN_HARNESS_CUA_HOME')
+  if ($null -eq $configuredHome) { $configuredHome = [Environment]::GetEnvironmentVariable('T3_COMPUTER_USE_HOME') }
+  $HomeDir = if ($configuredHome) { $configuredHome } else { Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) '.t3\computer-use' }
+}
 $HomeDir = [System.IO.Path]::GetFullPath($HomeDir)
 $hostDir = Join-Path $HomeDir 'native-host'
 $nodePath = (Get-Command node -ErrorAction Stop).Source
@@ -13,7 +17,7 @@ $manifestPath = Join-Path $hostDir 'dev.t3code.cua.json'
 $registryPath = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\dev.t3code.cua'
 if (-not $SkipRegistration -and (Test-Path -LiteralPath $registryPath)) {
   $existing = (Get-Item -LiteralPath $registryPath).GetValue('')
-  if ($existing -ne $manifestPath) { throw 'A different T3 fork already registered this native host. Its registration was preserved.' }
+  if ($existing -ne $manifestPath) { throw 'A different installation already registered this native host. Its registration was preserved.' }
 }
 New-Item -ItemType Directory -Path $hostDir -Force | Out-Null
 function CSharpLiteral([string]$value) { return '@"' + $value.Replace('"','""') + '"' }
@@ -40,7 +44,7 @@ public static class NativeLauncher {
       var output = Task.Run(() => Pump(child.StandardOutput.BaseStream, Console.OpenStandardOutput()));
       var errors = Task.Run(() => Pump(child.StandardError.BaseStream, Console.OpenStandardError()));
       child.WaitForExit(); Task.WaitAll(output, errors); return child.ExitCode;
-    } catch { Console.Error.WriteLine("T3 native host could not start."); return 1; }
+    } catch { Console.Error.WriteLine("Open Harness CUA native host could not start."); return 1; }
   }
 }
 '@
@@ -53,7 +57,7 @@ if (-not (Test-Path -LiteralPath $compiler)) { $compiler = Join-Path $env:WINDIR
 if (-not (Test-Path -LiteralPath $compiler)) { throw 'Windows .NET Framework compiler is unavailable; native host installation did not change Chrome.' }
 & $compiler /nologo /target:exe "/out:$executablePath" $sourcePath
 if ($LASTEXITCODE -ne 0) { throw 'Native host launcher compilation failed; Chrome registration was preserved.' }
-$manifest = @{name='dev.t3code.cua';description='T3 Browser local computer-use bridge';path=$executablePath;type='stdio';allowed_origins=@("chrome-extension://$ExtensionId/")}
+$manifest = @{name='dev.t3code.cua';description='Open Harness CUA local computer-use bridge';path=$executablePath;type='stdio';allowed_origins=@("chrome-extension://$ExtensionId/")}
 [System.IO.File]::WriteAllText($manifestPath,($manifest | ConvertTo-Json -Depth 4),[System.Text.UTF8Encoding]::new($false))
 if (-not $SkipRegistration) {
   New-Item -Path $registryPath -Force | Out-Null

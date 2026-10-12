@@ -182,7 +182,7 @@ export const make = Effect.gen(function* BrowserImportMake() {
   const environment = yield* HostProcess.Environment;
   const workingDirectory = yield* HostProcess.WorkingDirectory;
   const snapshotPath = pathContext.path.join(
-    environment.T3_COMPUTER_USE_HOME ||
+    (environment.OPEN_HARNESS_CUA_HOME ?? environment.T3_COMPUTER_USE_HOME) ||
       pathContext.path.join(workingDirectory, ".t3", "computer-use"),
     "chrome-session.json",
   );

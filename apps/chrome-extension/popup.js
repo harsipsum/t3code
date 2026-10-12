@@ -9,7 +9,7 @@ async function request(message) {
 async function showState() {
   const result = await request({ action: "status" });
   status.textContent = result.connected
-    ? `Connected to T3. ${result.tabs.length} tab(s) allowed.`
+    ? `Connected to Open Harness CUA. ${result.tabs.length} tab(s) allowed.`
     : result.error;
 }
 function action(selector, callback) {
@@ -44,7 +44,7 @@ async function exportSession(scope) {
     scope,
     profileName: document.querySelector("#profile").value || "Chrome session",
   });
-  status.textContent = `Saved ${result.cookieCount} cookies (${result.scope}).\n${result.path}\nImport ‘Chrome extension session’ in T3’s browser profiles.`;
+  status.textContent = `Saved ${result.cookieCount} cookies (${result.scope}).\n${result.path}\nChoose this file in a compatible browser-profile importer.`;
 }
 action("#export", () => exportSession("current-domain"));
 action("#export-all", () => exportSession("all-sites"));

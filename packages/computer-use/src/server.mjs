@@ -3,7 +3,7 @@ import { createInterface } from "node:readline";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { homeDir } from "./config.mjs";
+import { homeDir, browserOnly } from "./config.mjs";
 import { ensureBroker, bridgeFetch, bridgeCommand } from "./broker.mjs";
 import { runWindowsAction } from "./windows.mjs";
 import { decisionConfig, runChromeAct } from "./decision.mjs";
@@ -16,7 +16,7 @@ const keys = { type: "array", items: string, minItems: 1, maxItems: 8 };
 const tools = [];
 const chooser = decisionConfig();
 function tool(name, description, action, properties = {}, required = [], readOnly = false) {
-  if (process.env.T3_COMPUTER_USE_BROWSER_ONLY === "1" && name.startsWith("computer_")) return;
+  if (browserOnly && name.startsWith("computer_")) return;
   tools.push({
     name,
     description,
@@ -27,7 +27,7 @@ function tool(name, description, action, properties = {}, required = [], readOnl
 }
 tool(
   "chrome_status",
-  "Check the local Chrome extension connection and user-approved tabs. If disconnected, ask the user to open the T3 Browser popup and Allow this tab.",
+  "Check the local Chrome extension connection and user-approved tabs. If disconnected, ask the user to open the Open Harness CUA popup and Allow this tab.",
   "status",
   {},
   [],
@@ -35,7 +35,7 @@ tool(
 );
 tool(
   "chrome_tabs",
-  "List only Chrome tabs currently approved in the T3 Browser popup. Unapproved tab titles and URLs are not returned.",
+  "List only Chrome tabs currently approved in the Open Harness CUA popup. Unapproved tab titles and URLs are not returned.",
   "tabs",
   {},
   [],
@@ -110,7 +110,7 @@ tool(
 );
 tool(
   "chrome_export_session",
-  "Save the allowed tab's current-site Chrome cookies locally for T3's in-app browser import. Returns only path, count and domain scope, never cookie values. The user chooses the destination profile in T3. All-sites exports require the separate explicit popup button.",
+  "Save the allowed tab's current-site Chrome cookies locally for a compatible browser-profile importer. Returns only path, count and domain scope, never cookie values. The user chooses the destination profile. All-sites exports require the separate explicit popup button.",
   "exportSession",
   { tabId: tab, profileName: string },
   ["tabId"],
@@ -333,9 +333,9 @@ async function handle(request) {
         result = {
           protocolVersion: request.params?.protocolVersion || "2025-11-25",
           capabilities: { tools: {} },
-          serverInfo: { name: "t3-computer-use", version: "0.2.0" },
+          serverInfo: { name: "open-harness-cua", version: "0.2.1" },
           instructions:
-            "Chrome control is limited to tabs explicitly allowed in the extension popup. Read fresh snapshots before actions. Select an identity-bound Windows window before native actions. Session exports remain local; never read or print their cookie values. Text snapshots and saved image paths work with text-only models. T3's existing preview_* tools operate the in-app browser.",
+            "Chrome control is limited to tabs explicitly allowed in the Open Harness CUA popup. Read fresh snapshots before actions. Select an identity-bound Windows window before native actions. Session exports remain local; never read or print their cookie values. Text snapshots and saved image paths work with text-only models. Image-capable models can request screenshot image content.",
         };
         break;
       case "ping":

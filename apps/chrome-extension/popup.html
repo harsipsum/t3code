@@ -2,7 +2,7 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>T3 Browser</title>
+    <title>Open Harness CUA</title>
     <style>
       body {
         font: 14px system-ui;
@@ -49,36 +49,41 @@
     </style>
   </head>
   <body>
-    <h1>T3 Browser</h1>
+    <h1>Open Harness CUA</h1>
     <p>
-      Allow T3 to read and act in this tab on its current site. Access ends when it leaves this
-      site. You can revoke access here or close Chrome’s debugging banner.
+      Allow your agent to read and act in this tab on its current site. Access ends when it leaves
+      this site. You can revoke access here or close Chrome’s debugging banner.
     </p>
     <details>
       <summary>First-time setup (Windows)</summary>
-      <p class="secondary">Open PowerShell in your T3 checkout folder and run this command once:</p>
+      <p class="secondary">Open PowerShell in your checkout folder and run this command once:</p>
       <pre
         style="white-space: pre-wrap; overflow-wrap: anywhere"
-      ><code>powershell.exe -NoProfile -ExecutionPolicy Bypass -File packages/computer-use/install-host.ps1 -ExtensionId imnnjncafjnhhebhjkaoiobegpjahnhb -HomeDir "$PWD\.t3\computer-use"</code></pre>
+      ><code>powershell.exe -NoProfile -ExecutionPolicy Bypass -File packages/computer-use/install-host.ps1 -ExtensionId imnnjncafjnhhebhjkaoiobegpjahnhb</code></pre>
       <p class="secondary">
-        This installs the local connector for your Windows account. Start a T3 thread or another
-        client configured with the computer-use MCP tools, then reopen this popup. Use the same
-        computer-use folder in the client configuration. Full setup examples are in
-        <code>packages/computer-use/README.md</code> in your checkout.
+        This installs the local connector for your Windows account. Start a client configured with
+        the Open Harness CUA MCP tools, then reopen this popup. Use the same computer-use folder in
+        the client configuration. Full setup examples are in
+        <code>packages/computer-use/README.md</code> in your checkout. For a custom folder, set
+        <code>OPEN_HARNESS_CUA_HOME</code> in PowerShell or pass <code>-HomeDir</code> with that
+        same absolute folder.
       </p>
     </details>
     <button id="allow" class="primary">Allow this tab</button
     ><button id="revoke">Revoke this tab</button>
-    <p>Save a signed-in session locally, then import it into a browser profile in T3.</p>
+    <p>Save a signed-in session locally for a compatible browser-profile importer.</p>
+    <p class="secondary">
+      Optional T3 integration: import “Chrome extension session” in browser profiles.
+    </p>
     <label for="profile">Profile name</label
     ><input id="profile" value="Chrome session" maxlength="80" />
-    <button id="export">Save this site’s session for T3</button>
+    <button id="export">Save this site’s session locally</button>
     <details>
       <summary>Export across sites</summary>
       <p class="secondary">
         This requests cookie access to all sites and saves the whole Chrome cookie store locally.
       </p>
-      <button id="export-all">Save all sites’ session for T3</button>
+      <button id="export-all">Save all sites’ session locally</button>
     </details>
     <p id="status" role="status"></p>
     <p class="secondary">Extension ID: <code id="extension-id"></code></p>

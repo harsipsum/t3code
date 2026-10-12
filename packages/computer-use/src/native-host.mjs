@@ -40,7 +40,7 @@ async function receive(message) {
     } catch {
       send({
         type: "error",
-        message: "Native bridge is unavailable. Start the T3 computer-use MCP server.",
+        message: "Native bridge is unavailable. Start the Open Harness CUA MCP server.",
       });
     }
     if (!polling) {
@@ -79,7 +79,7 @@ async function poll() {
       try {
         await connect();
       } catch {
-        /* Wait for the configured T3 provider to return. */
+        /* Wait for the configured MCP client to return. */
       }
     }
   }
@@ -103,7 +103,7 @@ process.stdin.on("data", (chunk) => {
         .catch(() =>
           send({
             type: "error",
-            message: "Native bridge is unavailable. Start the T3 computer-use MCP server.",
+            message: "Native bridge is unavailable. Start the Open Harness CUA MCP server.",
           }),
         );
     } catch {

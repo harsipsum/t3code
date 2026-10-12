@@ -1,4 +1,8 @@
-# T3 CuA fork
+# Open Harness CUA in T3 Code
+
+Open Harness CUA connects Chrome and Windows tools to any MCP-capable harness.
+This page covers its optional T3 Code integration. For standalone clients and Hermes,
+use [the package README](../../packages/computer-use/README.md).
 
 This fork starts from T3 Code nightly `v0.0.46-nightly.20261011.2994`.
 Build with `vp i` and `vp run build:desktop`, then run `node scripts/start-t3-cua.mjs`.
@@ -33,16 +37,16 @@ this checkout's `apps/chrome-extension` folder. Open PowerShell in the checkout 
 install the extension's local connector once:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File packages/computer-use/install-host.ps1 -ExtensionId imnnjncafjnhhebhjkaoiobegpjahnhb -HomeDir "$PWD\.t3\computer-use"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File packages/computer-use/install-host.ps1 -ExtensionId imnnjncafjnhhebhjkaoiobegpjahnhb
 ```
 
-Start a T3 thread with the computer-use tools enabled, reopen the **T3 Browser** popup,
+Start a T3 thread with Open Harness CUA enabled, reopen the **Open Harness CUA** popup,
 and choose **Allow this tab** on the site you want to use. The agent can inspect and
 operate only allowed Chrome tabs. The popup's **First-time setup (Windows)** repeats
 the install command; [the package README](../../packages/computer-use/README.md) has
 copyable setup examples for other MCP clients and Hermes.
 
-Choose **Save this site's session for T3** in the extension to copy that site's cookies. In T3, open
+Choose **Save this site's session locally** in the extension to copy that site's cookies. In T3, open
 **Settings > Integrations > Browser profiles > Add profile > Chrome (extension snapshot)**.
 Review the named source, domains and capture time, then import into a new or existing profile.
 Open T3's in-app browser with that profile to use its cookie-based sign-ins.

@@ -2,17 +2,20 @@ import { performance } from "node:perf_hooks";
 
 /** The decision head chooses an ID we supplied; it never supplies mutation text. */
 export function decisionConfig(environment = process.env) {
+  const option = (suffix) =>
+    environment[`OPEN_HARNESS_CUA_DECISION_${suffix}`] ??
+    environment[`T3_DECISION_MODEL_${suffix}`];
   const bounded = (name, fallback, minimum, maximum) => {
-    const value = Number(environment[name] ?? fallback);
+    const value = Number(option(name) ?? fallback);
     return Number.isFinite(value) && value >= minimum && value <= maximum ? value : fallback;
   };
   return {
-    enabled: environment.T3_DECISION_MODEL_ENABLED === "1",
-    endpoint: environment.T3_DECISION_MODEL_URL,
-    model: environment.T3_DECISION_MODEL_ID || "clef-flash",
-    maxChars: bounded("T3_DECISION_MODEL_MAX_STATE_CHARS", 6000, 500, 16000),
-    maxCandidates: bounded("T3_DECISION_MODEL_MAX_CANDIDATES", 24, 4, 100),
-    minConfidence: bounded("T3_DECISION_MODEL_MIN_CONFIDENCE", 0.6, 0, 1),
+    enabled: option("ENABLED") === "1",
+    endpoint: option("URL"),
+    model: option("ID") || "clef-flash",
+    maxChars: bounded("MAX_STATE_CHARS", 6000, 500, 16000),
+    maxCandidates: bounded("MAX_CANDIDATES", 24, 4, 100),
+    minConfidence: bounded("MIN_CONFIDENCE", 0.6, 0, 1),
   };
 }
 

@@ -27,7 +27,7 @@ const exportWaiters = new Map();
 const cancelledCommands = new Set();
 let port;
 let connected = false;
-let connectionError = "Open a T3 provider with the computer-use MCP server first.";
+let connectionError = "Start a client configured with the Open Harness CUA MCP server first.";
 
 async function state() {
   const tabs = [];
@@ -116,7 +116,7 @@ const cdp = (tabId, method, params = {}) => chrome.debugger.sendCommand({ tabId 
 
 async function requireTab(tabId) {
   if (!allowed.has(tabId))
-    throw new Error("This tab is not allowed. Use the T3 Browser popup to approve it.");
+    throw new Error("This tab is not allowed. Use the Open Harness CUA popup to approve it.");
   const tab = await chrome.tabs.get(tabId);
   if (!/^https?:\/\//.test(tab.url || "") || new URL(tab.url).origin !== allowed.get(tabId)) {
     allowed.delete(tabId);
@@ -124,7 +124,9 @@ async function requireTab(tabId) {
     clearScopeContinuations(tabId);
     await chrome.debugger.detach({ tabId }).catch(() => {});
     await state();
-    throw new Error("This tab left the approved site. Allow it again in the T3 Browser popup.");
+    throw new Error(
+      "This tab left the approved site. Allow it again in the Open Harness CUA popup.",
+    );
   }
   return tab;
 }
@@ -658,7 +660,8 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
       return { revoked: true };
     }
     if (message.action === "export") {
-      if (!connected) throw new Error("Connect the T3 native host before saving a session.");
+      if (!connected)
+        throw new Error("Connect the Open Harness CUA native host before saving a session.");
       const snapshot = await sessionSnapshot(
         message.tabId,
         message.profileName,
@@ -677,7 +680,7 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
     throw new Error("Unknown popup action.");
   })().then(
     (result) => respond({ ok: true, result }),
-    (error) => respond({ ok: false, error: error.message || "T3 Browser failed." }),
+    (error) => respond({ ok: false, error: error.message || "Open Harness CUA failed." }),
   );
   return true;
 });
