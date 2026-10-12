@@ -26,6 +26,14 @@ function validateRequest(action, args, homeDir) {
   if (args.includeImage !== undefined && typeof args.includeImage !== "boolean") {
     throw new Error("includeImage must be a boolean.");
   }
+  if (
+    args.coordinateSpace !== undefined &&
+    (!["click", "scroll"].includes(action) || !["desktop", "window"].includes(args.coordinateSpace))
+  ) {
+    throw new Error(
+      "coordinateSpace is supported only for click/scroll and must be desktop or window.",
+    );
+  }
   if (homeDir !== undefined && typeof homeDir !== "string") {
     throw new Error("homeDir must be a path string.");
   }

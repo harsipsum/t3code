@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "T3 Browser",
   "description": "Allow selected Chrome tabs for your local T3 agent and save signed-in sessions locally.",
-  "version": "0.1.3",
+  "version": "0.1.7",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA04prs7VjzWUCpA0d8VuOQfrgHolBtoDKYcQzOxAngLfWOSOD4QNtmj0ABGGmay5Bo6iS6LzEzJhZVSNTM/qwDITeHsbjeBVDuXM20KwKpmqbo3qLGpq9iBvEytSszRQVNLQ86v+43YCUwOKdjWyBGVbZx68NlmWOqLr68Ah3oM2Oh8sdC3kUF7op0CHrNyil86duVx8xCbe7E2ThZ5tkNcZ2PW3zjr8SPT99o8tP6rwDS7l3RVXfiPeHaR2N+AqIU66c9ivmN9onEypFDz8vRKV91xDKPP95TaqZxVMFYylUMNcJxKd49f5rLR14YDEFtqeDl6IJIFmoeda626GzkwIDAQAB",
   "permissions": ["debugger", "nativeMessaging", "tabs", "storage", "cookies"],
   "optional_host_permissions": ["<all_urls>"],

@@ -1,8 +1,27 @@
-import { projectSnapshot } from "./snapshot.js";
+import {
+  projectSnapshot,
+  resolveScopeRoot,
+  scopedSnapshotNodes,
+  findSnapshotMatches,
+  projectSearchSnapshot,
+} from "./snapshot.js";
 
 const HOST = "dev.t3code.cua";
 const allowed = new Map();
 const snapshots = new Map();
+const scopeContinuations = new Map();
+function clearScopeContinuations(tabId) {
+  for (const [token, entry] of scopeContinuations)
+    if (entry.tabId === tabId) scopeContinuations.delete(token);
+}
+function continuationAnchor(token, tabId, origin) {
+  const entry = scopeContinuations.get(token);
+  if (!entry || entry.expiresAt <= Date.now() || entry.tabId !== tabId || entry.origin !== origin) {
+    if (entry) scopeContinuations.delete(token);
+    throw new Error("The decision scope continuation expired or is no longer valid.");
+  }
+  return entry;
+}
 const queues = new Map();
 const exportWaiters = new Map();
 const cancelledCommands = new Set();
@@ -21,6 +40,7 @@ async function state() {
     } catch {
       allowed.delete(tabId);
       snapshots.delete(tabId);
+      clearScopeContinuations(tabId);
       await chrome.debugger.detach({ tabId }).catch(() => {});
     }
   }
@@ -82,6 +102,7 @@ function connect() {
     for (const [tabId] of allowed) void chrome.debugger.detach({ tabId }).catch(() => {});
     allowed.clear();
     snapshots.clear();
+    scopeContinuations.clear();
     for (const waiter of exportWaiters.values()) {
       clearTimeout(waiter.timer);
       waiter.reject(new Error(connectionError));
@@ -100,6 +121,7 @@ async function requireTab(tabId) {
   if (!/^https?:\/\//.test(tab.url || "") || new URL(tab.url).origin !== allowed.get(tabId)) {
     allowed.delete(tabId);
     snapshots.delete(tabId);
+    clearScopeContinuations(tabId);
     await chrome.debugger.detach({ tabId }).catch(() => {});
     await state();
     throw new Error("This tab left the approved site. Allow it again in the T3 Browser popup.");
@@ -130,6 +152,56 @@ async function referencedNode(tabId, args) {
   const name = String(current?.name?.value || "").replace(/[\r\n]+/g, " ");
   if (!current || current.role?.value !== ref.role || name !== ref.name)
     throw new Error("The referenced element changed. Run chrome_snapshot again.");
+  if (args.decisionGuard) {
+    const states = Object.fromEntries(
+      (current.properties || [])
+        .filter((item) => ["checked", "expanded", "disabled", "selected"].includes(item.name))
+        .map((item) => [item.name, item.value?.value]),
+    );
+    if (JSON.stringify(states) !== JSON.stringify(ref.states))
+      throw new Error("The referenced element state changed. Run chrome_snapshot again.");
+    if (ref.inputKind) {
+      const details = await cdp(tabId, "DOM.describeNode", { backendNodeId: ref.backendNodeId });
+      const attributes = details.node.attributes || [];
+      const typeIndex = attributes.indexOf("type");
+      const kind =
+        details.node.nodeName === "TEXTAREA"
+          ? "textarea"
+          : details.node.nodeName === "INPUT"
+            ? typeIndex < 0
+              ? "text"
+              : attributes[typeIndex + 1].toLowerCase()
+            : "unknown";
+      if (kind !== ref.inputKind || String(current.value?.value ?? "") !== ref.value)
+        throw new Error(
+          "The referenced element value or input type changed. Run chrome_snapshot again.",
+        );
+    }
+    if (ref.selectOptions) {
+      const object = await cdp(tabId, "DOM.resolveNode", { backendNodeId: ref.backendNodeId });
+      try {
+        const result = await cdp(tabId, "Runtime.callFunctionOn", {
+          objectId: object.object.objectId,
+          functionDeclaration:
+            "function(){if(this.tagName!=='SELECT')return null;return {value:this.value,options:Array.from(this.options).slice(0,100).map(o=>({label:o.label,value:o.value,selected:o.selected,disabled:o.disabled}))}}",
+          returnByValue: true,
+        });
+        if (
+          result.exceptionDetails ||
+          !result.result.value ||
+          result.result.value.value !== ref.selectValue ||
+          JSON.stringify(result.result.value.options) !== JSON.stringify(ref.selectOptions)
+        )
+          throw new Error(
+            "The referenced element selection or options changed. Run chrome_snapshot again.",
+          );
+      } finally {
+        await cdp(tabId, "Runtime.releaseObject", { objectId: object.object.objectId }).catch(
+          () => {},
+        );
+      }
+    }
+  }
   return ref;
 }
 
@@ -258,10 +330,34 @@ async function execute(action, args, expiresAt = Infinity, commandId) {
   const tab = await requireTab(args.tabId);
   const tabId = args.tabId;
   if (action === "snapshot") {
+    if ((args.scope || args.scopeContinuation) && args.query)
+      throw new Error("Use either a decision scope or a snapshot query.");
+    if (args.scope && args.scopeContinuation)
+      throw new Error("Use either an initial scope or its internal continuation.");
+    const origin = new URL(tab.url).origin;
+    const anchor = args.scopeContinuation
+      ? continuationAnchor(args.scopeContinuation, tabId, origin)
+      : args.scope
+        ? await referencedNode(tabId, args.scope)
+        : undefined;
     const result = await cdp(tabId, "Accessibility.getFullAXTree");
+    const scopeRoot = anchor
+      ? resolveScopeRoot(result.nodes, anchor, !!args.scopeContinuation)
+      : undefined;
+    const found =
+      args.query !== undefined ? findSnapshotMatches(result.nodes, args.query) : undefined;
+    const observedNodes = found
+      ? [
+          ...new Map(
+            found.contexts.flatMap((context) => context.nodes).map((node) => [node.nodeId, node]),
+          ).values(),
+        ]
+      : scopeRoot
+        ? scopedSnapshotNodes(result.nodes, scopeRoot.nodeId)
+        : result.nodes;
     const textRoles = new Set(["textbox", "searchbox", "combobox", "spinbutton"]);
     await Promise.all(
-      result.nodes
+      observedNodes
         .filter((node) => !node.ignored && textRoles.has(node.role?.value) && node.backendDOMNodeId)
         .slice(0, args.maxNodes || 500)
         .map(async (node) => {
@@ -277,8 +373,10 @@ async function execute(action, args, expiresAt = Infinity, commandId) {
               details.node.nodeName === "TEXTAREA" ||
               (details.node.nodeName === "INPUT" &&
                 ["text", "search", "email", "url", "tel", "number"].includes(type))
-            )
+            ) {
               node.safeValue = String(node.value?.value ?? "");
+              node.inputKind = details.node.nodeName === "TEXTAREA" ? "textarea" : type;
+            }
             if (details.node.nodeName === "SELECT") {
               const object = await cdp(tabId, "DOM.resolveNode", {
                 backendNodeId: node.backendDOMNodeId,
@@ -303,9 +401,28 @@ async function execute(action, args, expiresAt = Infinity, commandId) {
           }
         }),
     );
-    const projection = projectSnapshot(result.nodes, args.maxNodes || 500);
+    const projection = found
+      ? projectSearchSnapshot(found, args.maxNodes || 500)
+      : projectSnapshot(observedNodes, args.maxNodes || 500, scopeRoot?.nodeId);
+    if (scopeRoot && !projection.rootRef)
+      throw new Error("The decision scope has no current element ref. Take a new snapshot.");
+    let scopeContinuation = args.scopeContinuation;
+    if (scopeRoot && !scopeContinuation) {
+      for (const [token, entry] of scopeContinuations)
+        if (entry.expiresAt <= Date.now()) scopeContinuations.delete(token);
+      if (scopeContinuations.size >= 128)
+        throw new Error("Too many active decision scopes; return to the planner.");
+      scopeContinuation = crypto.randomUUID();
+      scopeContinuations.set(scopeContinuation, {
+        tabId,
+        origin,
+        backendNodeId: anchor.backendNodeId,
+        role: anchor.role,
+        expiresAt: Date.now() + 120000,
+      });
+    }
     const id = crypto.randomUUID();
-    snapshots.set(tabId, { id, refs: projection.refs });
+    snapshots.set(tabId, { id, refs: projection.refs, capturedAt: Date.now() });
     const layout = await cdp(tabId, "Page.getLayoutMetrics");
     const view = layout.cssVisualViewport || layout.visualViewport;
     return {
@@ -316,12 +433,26 @@ async function execute(action, args, expiresAt = Infinity, commandId) {
       text: projection.text,
       nodeCount: projection.nodeCount,
       omittedNodes: projection.omittedNodes,
+      ...(found ? { search: projection.search } : {}),
       viewport: {
         width: view.clientWidth,
         height: view.clientHeight,
         scrollX: view.pageX,
         scrollY: view.pageY,
       },
+      ...(args.structured ? { elements: projection.elements, capturedAt: Date.now() } : {}),
+      ...(scopeRoot
+        ? {
+            scope: {
+              ref: projection.rootRef,
+              snapshotId: id,
+              role: anchor.role,
+              name: String(scopeRoot.name?.value || "").replace(/[\r\n]+/g, " "),
+              outsideContentExcluded: true,
+            },
+            scopeContinuation,
+          }
+        : {}),
     };
   }
   if (action === "screenshot") {
@@ -387,6 +518,7 @@ async function execute(action, args, expiresAt = Infinity, commandId) {
         "Navigation leaves the approved site. Open that site and allow its tab in the popup first.",
       );
     assertDeadline(expiresAt, commandId);
+    clearScopeContinuations(tabId);
     await cdp(tabId, "Page.navigate", { url: url.href });
   } else if (action === "click") {
     const location = await point(tabId, args, expiresAt, commandId);
@@ -471,15 +603,19 @@ async function execute(action, args, expiresAt = Infinity, commandId) {
 chrome.debugger.onDetach.addListener((source) => {
   allowed.delete(source.tabId);
   snapshots.delete(source.tabId);
+  clearScopeContinuations(source.tabId);
   void state();
 });
 chrome.debugger.onEvent.addListener((source, method) => {
-  if (method === "DOM.documentUpdated" || method === "Page.frameNavigated")
+  if (method === "DOM.documentUpdated" || method === "Page.frameNavigated") {
     snapshots.delete(source.tabId);
+    clearScopeContinuations(source.tabId);
+  }
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
   allowed.delete(tabId);
   snapshots.delete(tabId);
+  clearScopeContinuations(tabId);
   void state();
 });
 chrome.tabs.onUpdated.addListener((tabId, changes) => {
@@ -516,6 +652,7 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
     if (message.action === "revoke") {
       allowed.delete(message.tabId);
       snapshots.delete(message.tabId);
+      clearScopeContinuations(message.tabId);
       await chrome.debugger.detach({ tabId: message.tabId }).catch(() => {});
       await state();
       return { revoked: true };

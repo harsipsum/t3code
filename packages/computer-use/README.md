@@ -85,15 +85,24 @@ Keep it private; do not commit it, print it or send it to a model.
 
 ## Text-only models and Windows
 
+`chrome_snapshot` reads the whole document rather than just the scrolled viewport.
+On long pages, provide `query` to search current accessible names before the output
+limit. Matches include their complete containing row, form or dialog. Search reports
+multiple contexts and omitted whole contexts explicitly; refine the query or increase
+`maxNodes` when needed. Returned refs always belong to the new snapshot.
+
 Snapshots return text by default. Ordinary form fields include their current
 values when the DOM confirms a non-password type; password and unidentified
 field values are omitted/redacted. Screenshots save a local PNG path. Set
 `includeImage: true` only for an image-capable model.
 
 Call `computer_windows` first, then pass its exact identity-bound `windowId` to
-native snapshot/click/type/key/scroll tools. Absolute desktop coordinates must
-lie within that selected window. Other windows and the clipboard are not
-implicit targets.
+native snapshot/click/type/key/scroll tools. `computer_click` and `computer_scroll` default to absolute
+desktop pixels. Pass `coordinateSpace: "window"` when x/y come from the window
+screenshot, whose top-left is (0, 0). The helper translates these using the selected
+window's fresh bounds and rejects points outside it. Scroll without x/y uses the window
+center. Other windows and the clipboard
+are not implicit targets.
 
 Set `T3_COMPUTER_USE_BROWSER_ONLY=1` to remove all native computer tools from
 the MCP catalog and dispatch. This lets a browser agent run while someone is
@@ -132,6 +141,60 @@ startup filter matches that name before discovery registers the
 `mcp-t3_computer_use` alias. A prefixed selector can therefore prevent startup.
 `--ignore-rules` excludes local instructions without removing the MCP config.
 Select the model and effort explicitly, such as `-m gpt-5.6-luna --reasoning low`.
+
+## Optional local action chooser
+
+This experiment is disabled by default. It requires a separately running local
+decision model exposing the typed `/v1/systemone` API, such as a compatible
+llama.cpp build with Clef. Add these values to the MCP server's environment:
+
+```yaml
+T3_DECISION_MODEL_ENABLED: "1"
+T3_DECISION_MODEL_URL: http://127.0.0.1:8767/v1/systemone
+T3_DECISION_MODEL_ID: clef-flash
+```
+
+The measured Windows runtime uses the official [llama.cpp b11429 release](https://github.com/ggml-org/llama.cpp/releases/tag/b11429)
+with its matching CUDA 13.4 runtime DLL archive, and [Clef-Flash Q4_K_M weights](https://huggingface.co/ggml-org/Clef-Flash-GGUF/tree/6b4fe4c59098479652d94f0fe11a40facbebd1ec).
+Verify the published download hashes and extract the server and matching DLLs together.
+For a compatible NVIDIA GPU, replace these absolute paths and keep the server running:
+
+```powershell
+& 'C:/path/to/llama-server.exe' -m 'C:/path/to/Clef-Flash-Q4_K_M.gguf' -ngl all -c 2048 -b 2048 -ub 2048 -np 1 --load-mode none --cache-ram 0 --ctx-checkpoints 0 --host 127.0.0.1 --port 8767 --alias clef-flash
+```
+
+This is a text-only decision runtime with the genuine Clef head. Its context and
+physical batch must fit the complete prompt; a character budget does not guarantee
+token fit. Loading it successfully does not establish faster end-to-end computer use.
+Keep it resident only when its measured memory and latency suit the machine.
+
+This exposes `chrome_act`. Give it the approved `tabId`, a precise subtask `intent`,
+and optional `textSlots` containing `{id, field, text}`. The planner supplies exact
+text; the local chooser selects only actions and current targets. It observes after
+each action and returns to the planner after four steps by default (`maxSteps`, up
+to eight), uncertainty, stale state, timeout or a context budget limit. The planner
+must verify the final saved outcome. Existing direct tools remain available.
+
+For a larger page, first read `chrome_snapshot`, then provide `scope: {ref, snapshotId}`
+for one row, dialog, form, listitem, menu, group or region. The chooser receives the
+complete current contents of that container and explicitly excludes outside content.
+The container must retain its original DOM identity and role on the approved site.
+An internal continuation survives the routine's own public-ref invalidation and child
+value changes; a detached or replaced container returns control rather than widening
+to the page. Whole-page observation is still the default.
+
+Only click, exact supplied text and existing native-select options are currently
+delegated. Password fields are excluded. Large/partial observations return control
+instead of silently dropping candidate actions. The endpoint accepts loopback HTTP
+only; there is no remote-model fallback. The routine has a 30-second deadline by
+default (`deadlineMs`, at most 60 seconds). Cancellation removes queued input.
+
+`T3_DECISION_MODEL_MAX_STATE_CHARS` bounds the entire decision payload (default
+6000), `T3_DECISION_MODEL_MAX_CANDIDATES` bounds its action menu (default 24), and
+`T3_DECISION_MODEL_MIN_CONFIDENCE` sets the abstention threshold (default 0.6).
+The response records decision/action timings, supplied model token usage and the
+fresh final observation. These controls do not claim a speed or quality advantage;
+measure model memory, latency and real task outcomes before enabling it routinely.
 
 ## Proof and provenance
 

@@ -4,8 +4,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { homeDir } from "./config.mjs";
-import { ensureBroker, bridgeFetch } from "./broker.mjs";
+import { ensureBroker, bridgeFetch, bridgeCommand } from "./broker.mjs";
 import { runWindowsAction } from "./windows.mjs";
+import { decisionConfig, runChromeAct } from "./decision.mjs";
 
 const string = { type: "string", minLength: 1 };
 const number = { type: "number" };
@@ -13,6 +14,7 @@ const tab = { type: "integer", minimum: 0 };
 const boolean = { type: "boolean" };
 const keys = { type: "array", items: string, minItems: 1, maxItems: 8 };
 const tools = [];
+const chooser = decisionConfig();
 function tool(name, description, action, properties = {}, required = [], readOnly = false) {
   if (process.env.T3_COMPUTER_USE_BROWSER_ONLY === "1" && name.startsWith("computer_")) return;
   tools.push({
@@ -41,9 +43,13 @@ tool(
 );
 tool(
   "chrome_snapshot",
-  "Read an allowed tab's accessibility tree as text. Returns snapshotId and stable element refs for the next click/type. Refresh after an action or navigation. Frames are included when Chrome's accessibility tree exposes them.",
+  "Read an allowed tab's whole-document accessibility tree, independent of scroll position. For long pages, query searches current accessible names before maxNodes is applied and returns complete containing rows/forms/dialogs plus explicit match/ambiguity/omission metadata. Returns fresh snapshotId/element refs; refresh after actions. Frames appear only when Chrome exposes them.",
   "snapshot",
-  { tabId: tab, maxNodes: { type: "integer", minimum: 1, maximum: 5000 } },
+  {
+    tabId: tab,
+    maxNodes: { type: "integer", minimum: 1, maximum: 5000 },
+    query: { type: "string", minLength: 1, maxLength: 200 },
+  },
   ["tabId"],
   true,
 );
@@ -109,6 +115,39 @@ tool(
   { tabId: tab, profileName: string },
   ["tabId"],
 );
+if (chooser.enabled)
+  tool(
+    "chrome_act",
+    "Use an optional local chooser for routine actions in an approved Chrome tab. Supply a precise subtask intent and exact text slots. For a larger page, give scope={ref,snapshotId} from a fresh chrome_snapshot selecting one row, dialog, form, listitem, menu, group or region; all content inside that container is retained and outside content is explicitly excluded. It uses only current refs/options, returns when uncertain or its step budget ends, and generates no text. Use direct tools for missing facts or complex reasoning. Verify the final saved result yourself.",
+    "act",
+    {
+      tabId: tab,
+      intent: { type: "string", minLength: 1, maxLength: 2000 },
+      scope: {
+        type: "object",
+        properties: { ref: string, snapshotId: string },
+        required: ["ref", "snapshotId"],
+        additionalProperties: false,
+      },
+      textSlots: {
+        type: "array",
+        maxItems: 8,
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string", minLength: 1, maxLength: 30 },
+            field: { type: "string", minLength: 1, maxLength: 120 },
+            text: { type: "string", maxLength: 4096 },
+          },
+          required: ["id", "field", "text"],
+          additionalProperties: false,
+        },
+      },
+      maxSteps: { type: "integer", minimum: 1, maximum: 8 },
+      deadlineMs: { type: "integer", minimum: 1000, maximum: 60000 },
+    },
+    ["tabId", "intent"],
+  );
 tool(
   "computer_windows",
   "List visible Windows windows and identity-bound windowId tokens. Select the exact intended window before any other computer tool.",
@@ -127,12 +166,13 @@ tool(
 );
 tool(
   "computer_click",
-  "Click at absolute desktop pixel coordinates in the selected Windows window. Refuses a stale window identity. Use the bounds and screenshot from computer_snapshot.",
+  "Click inside the selected Windows window. coordinateSpace defaults to desktop (absolute pixels); use window for pixels relative to the computer_snapshot screenshot's top-left. Refuses a stale window identity.",
   "click",
   {
     windowId: string,
     x: number,
     y: number,
+    coordinateSpace: { type: "string", enum: ["desktop", "window"] },
     button: { type: "string", enum: ["left", "right", "middle"] },
     clickCount: { type: "integer", minimum: 1, maximum: 2 },
   },
@@ -154,9 +194,16 @@ tool(
 );
 tool(
   "computer_scroll",
-  "Scroll in the selected Windows window. Wheel deltas use Windows units: 120 is one notch. Optional x/y must lie within its bounds.",
+  "Scroll in the selected Windows window. Wheel deltas use Windows units: 120 is one notch. Optional x/y default to absolute desktop pixels; set coordinateSpace=window for pixels relative to its screenshot. Without x/y, scroll at the window center.",
   "scroll",
-  { windowId: string, deltaX: number, deltaY: number, x: number, y: number },
+  {
+    windowId: string,
+    deltaX: number,
+    deltaY: number,
+    x: number,
+    y: number,
+    coordinateSpace: { type: "string", enum: ["desktop", "window"] },
+  },
   ["windowId", "deltaY"],
 );
 
@@ -188,8 +235,11 @@ function validate(schema, value, path = "arguments") {
         value > (schema.maximum ?? Infinity))
     )
       throw new Error(`${path} is outside its allowed range.`);
-    if (typeof value === "string" && value.length < (schema.minLength || 0))
-      throw new Error(`${path} cannot be empty.`);
+    if (
+      typeof value === "string" &&
+      (value.length < (schema.minLength || 0) || value.length > (schema.maxLength ?? Infinity))
+    )
+      throw new Error(`${path} has an invalid length.`);
     if (schema.enum && !schema.enum.includes(value))
       throw new Error(`${path} has an unsupported value.`);
   }
@@ -214,7 +264,23 @@ async function callTool(name, args, operation) {
     throw new Error("Supply exactly one option value or label.");
   let result;
   operation.controller.signal.throwIfAborted();
-  if (name.startsWith("computer_"))
+  if (definition.action === "act") {
+    const current = await connection();
+    const routine = await runChromeAct({
+      input: args,
+      config: chooser,
+      signal: operation.controller.signal,
+      call: async (action, actionArgs, signal) => {
+        return bridgeCommand(current, action, actionArgs, {
+          signal,
+          onCancel: (cancel) => {
+            operation.cancel = cancel;
+          },
+        });
+      },
+    });
+    return { content: [{ type: "text", text: JSON.stringify(routine) }] };
+  } else if (name.startsWith("computer_"))
     result = await runWindowsAction(definition.action, args, homeDir, {
       signal: operation.controller.signal,
     });
@@ -267,7 +333,7 @@ async function handle(request) {
         result = {
           protocolVersion: request.params?.protocolVersion || "2025-11-25",
           capabilities: { tools: {} },
-          serverInfo: { name: "t3-computer-use", version: "0.1.2" },
+          serverInfo: { name: "t3-computer-use", version: "0.2.0" },
           instructions:
             "Chrome control is limited to tabs explicitly allowed in the extension popup. Read fresh snapshots before actions. Select an identity-bound Windows window before native actions. Session exports remain local; never read or print their cookie values. Text snapshots and saved image paths work with text-only models. T3's existing preview_* tools operate the in-app browser.",
         };

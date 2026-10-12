@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
-import { ensureBroker, bridgeFetch } from "../src/broker.mjs";
+import { ensureBroker, bridgeFetch, bridgeCommand } from "../src/broker.mjs";
 import { projectSnapshot } from "../../../apps/chrome-extension/snapshot.js";
 
 async function temporary(t) {
@@ -176,6 +177,46 @@ test("cancelled queued action never reaches native host", async (t) => {
   await rejected;
   const polled = await bridgeFetch(broker.connection, `/poll?sessionId=${session.sessionId}`);
   assert.equal(polled.command, undefined);
+});
+
+test("an internal routine abort awaits cancellation of its queued broker command", async (t) => {
+  const queued = new Map();
+  let markQueued;
+  const received = new Promise((resolve) => {
+    markQueued = resolve;
+  });
+  const server = createServer(async (request, response) => {
+    let text = "";
+    for await (const chunk of request) text += chunk;
+    const body = JSON.parse(text);
+    if (request.url === "/call") {
+      queued.set(body.id, body);
+      markQueued();
+      return;
+    }
+    if (request.url === "/cancel") {
+      queued.delete(body.id);
+      response.end(JSON.stringify({ cancelled: true }));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    server.close();
+  });
+  const controller = new AbortController();
+  const action = bridgeCommand(
+    { url: `http://127.0.0.1:${server.address().port}`, token: "synthetic" },
+    "click",
+    { tabId: 9 },
+    { signal: controller.signal },
+  );
+  const refused = assert.rejects(action);
+  await received;
+  assert.equal(queued.size, 1);
+  controller.abort();
+  await refused;
+  assert.equal(queued.size, 0, "no queued mutation survives the internal deadline/abort");
 });
 
 test("snapshot can verify ordinary input while password/unknown values stay private", () => {

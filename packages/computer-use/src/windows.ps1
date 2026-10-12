@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 
 try {
+  . (Join-Path $PSScriptRoot 'coordinates.ps1')
   $rawRequest = [Console]::In.ReadToEnd()
   if ([string]::IsNullOrWhiteSpace($rawRequest)) {
     throw 'A JSON request is required.'
@@ -718,15 +719,17 @@ public static class T3CuaNative
     } elseif ($action -eq 'click') {
       $x = Get-IntegerArgument $argsObject.x 'x' -100000 100000
       $y = Get-IntegerArgument $argsObject.y 'y' -100000 100000
+      $coordinateSpace = if ($null -eq $argsObject.coordinateSpace) { 'desktop' } else { [string]$argsObject.coordinateSpace }
+      if ($coordinateSpace -notin @('desktop', 'window')) { throw 'coordinateSpace must be desktop or window.' }
       $clickCount = Get-IntegerArgument $argsObject.clickCount 'clickCount' 1 2 $true 1
       $buttonName = if ($null -eq $argsObject.button) { 'left' } else { [string]$argsObject.button }
       $button = switch ($buttonName.ToLowerInvariant()) { 'left' { 0 } 'right' { 1 } 'middle' { 2 } default { throw 'button must be left, right, or middle.' } }
       Set-TargetForeground $target
       $target = Get-TargetWindow $target.windowId
       $bounds = $target.bounds
-      if ($x -lt $bounds.x -or $y -lt $bounds.y -or $x -ge ($bounds.x + $bounds.width) -or $y -ge ($bounds.y + $bounds.height)) {
-        throw 'The click point must be inside the selected window.'
-      }
+      $point = Resolve-T3InputPoint $x $y $coordinateSpace $bounds
+      $x = $point.x
+      $y = $point.y
       $virtualX = [T3CuaNative]::GetSystemMetrics(76)
       $virtualY = [T3CuaNative]::GetSystemMetrics(77)
       $virtualWidth = [T3CuaNative]::GetSystemMetrics(78)
@@ -770,11 +773,14 @@ public static class T3CuaNative
       $deltaX = Get-IntegerArgument $argsObject.deltaX 'deltaX' -10000 10000 $true 0
       $deltaY = Get-IntegerArgument $argsObject.deltaY 'deltaY' -10000 10000 $true 0
       if ($deltaX -eq 0 -and $deltaY -eq 0) { throw 'At least one scroll delta is required.' }
+      $coordinateSpace = if ($null -eq $argsObject.coordinateSpace) { 'desktop' } else { [string]$argsObject.coordinateSpace }
+      if ($coordinateSpace -notin @('desktop', 'window')) { throw 'coordinateSpace must be desktop or window.' }
       Set-TargetForeground $target
       $target = Get-TargetWindow $target.windowId
       if ($null -eq $argsObject.x -and $null -eq $argsObject.y) {
-        $x = $target.bounds.x + [int][Math]::Floor($target.bounds.width / 2)
-        $y = $target.bounds.y + [int][Math]::Floor($target.bounds.height / 2)
+        $x = [int][Math]::Floor($target.bounds.width / 2)
+        $y = [int][Math]::Floor($target.bounds.height / 2)
+        $coordinateSpace = 'window'
       } elseif ($null -ne $argsObject.x -and $null -ne $argsObject.y) {
         $x = Get-IntegerArgument $argsObject.x 'x' -100000 100000
         $y = Get-IntegerArgument $argsObject.y 'y' -100000 100000
@@ -782,9 +788,9 @@ public static class T3CuaNative
         throw 'x and y must be provided together.'
       }
       $bounds = $target.bounds
-      if ($x -lt $bounds.x -or $y -lt $bounds.y -or $x -ge ($bounds.x + $bounds.width) -or $y -ge ($bounds.y + $bounds.height)) {
-        throw 'The scroll point must be inside the selected window.'
-      }
+      $point = Resolve-T3InputPoint $x $y $coordinateSpace $bounds
+      $x = $point.x
+      $y = $point.y
       $virtualX = [T3CuaNative]::GetSystemMetrics(76)
       $virtualY = [T3CuaNative]::GetSystemMetrics(77)
       $virtualWidth = [T3CuaNative]::GetSystemMetrics(78)

@@ -25,6 +25,28 @@ export async function bridgeFetch(connection, route, body, options = {}) {
   return result;
 }
 
+/** An aborted fetch must also remove its queued broker action before returning. */
+export async function bridgeCommand(connection, action, args, { signal, onCancel } = {}) {
+  const id = randomUUID();
+  let cancellation;
+  const cancel = () =>
+    (cancellation ||= bridgeFetch(connection, "/cancel", { id }, { timeout: 2000 }).catch(
+      () => {},
+    ));
+  onCancel?.(cancel);
+  const abort = () => {
+    void cancel();
+  };
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    signal?.throwIfAborted();
+    return await bridgeFetch(connection, "/call", { id, action, args }, { signal });
+  } finally {
+    signal?.removeEventListener("abort", abort);
+    if (signal?.aborted) await cancel();
+  }
+}
+
 async function bodyJson(request) {
   let bytes = 0;
   const chunks = [];
@@ -293,8 +315,21 @@ async function startBroker(homeDir, files) {
           return;
         }
         const command = await bodyJson(request);
+        if (response.destroyed)
+          throw new Error("Chrome action caller disconnected before queueing.");
         const id = typeof command.id === "string" ? command.id : randomUUID();
         if (pending.has(id)) throw new Error("Duplicate Chrome action identifier.");
+        response.once("close", () => {
+          if (response.writableEnded) return;
+          const item = pending.get(id);
+          if (!item) return;
+          pending.delete(id);
+          clearTimeout(item.timer);
+          const queued = queue.findIndex((entry) => entry.id === id);
+          if (queued !== -1) queue.splice(queued, 1);
+          else if (item.delivered) enqueue({ type: "cancel", id });
+          item.reject(new Error("Chrome action caller disconnected; queued input cancelled."));
+        });
         const expiresAt = Date.now() + files.commandTimeoutMs;
         const result = await new Promise((resolve, reject) => {
           const timer = setTimeout(() => {
