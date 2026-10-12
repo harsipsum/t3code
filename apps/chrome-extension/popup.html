@@ -1,0 +1,87 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>T3 Browser</title>
+    <style>
+      body {
+        font: 14px system-ui;
+        margin: 16px;
+        width: 330px;
+        color: #1d1d1f;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0 0 12px;
+      }
+      p {
+        line-height: 1.45;
+      }
+      button,
+      input {
+        box-sizing: border-box;
+        width: 100%;
+        padding: 9px;
+        margin: 4px 0;
+        border: 1px solid #aaa;
+        border-radius: 6px;
+      }
+      button {
+        cursor: pointer;
+        background: #f5f5f7;
+      }
+      button.primary {
+        background: #171717;
+        color: white;
+      }
+      #status {
+        white-space: pre-wrap;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      code {
+        font-size: 11px;
+        word-break: break-all;
+      }
+      .secondary {
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>T3 Browser</h1>
+    <p>
+      Allow T3 to read and act in this tab on its current site. Access ends when it leaves this
+      site. You can revoke access here or close Chrome’s debugging banner.
+    </p>
+    <details>
+      <summary>First-time setup (Windows)</summary>
+      <p class="secondary">Open PowerShell in your T3 checkout folder and run this command once:</p>
+      <pre
+        style="white-space: pre-wrap; overflow-wrap: anywhere"
+      ><code>powershell.exe -NoProfile -ExecutionPolicy Bypass -File packages/computer-use/install-host.ps1 -ExtensionId imnnjncafjnhhebhjkaoiobegpjahnhb -HomeDir "$PWD\.t3\computer-use"</code></pre>
+      <p class="secondary">
+        This installs the local connector for your Windows account. Start a T3 thread or another
+        client configured with the computer-use MCP tools, then reopen this popup. Use the same
+        computer-use folder in the client configuration. Full setup examples are in
+        <code>packages/computer-use/README.md</code> in your checkout.
+      </p>
+    </details>
+    <button id="allow" class="primary">Allow this tab</button
+    ><button id="revoke">Revoke this tab</button>
+    <p>Save a signed-in session locally, then import it into a browser profile in T3.</p>
+    <label for="profile">Profile name</label
+    ><input id="profile" value="Chrome session" maxlength="80" />
+    <button id="export">Save this site’s session for T3</button>
+    <details>
+      <summary>Export across sites</summary>
+      <p class="secondary">
+        This requests cookie access to all sites and saves the whole Chrome cookie store locally.
+      </p>
+      <button id="export-all">Save all sites’ session for T3</button>
+    </details>
+    <p id="status" role="status"></p>
+    <p class="secondary">Extension ID: <code id="extension-id"></code></p>
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>

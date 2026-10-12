@@ -2,8 +2,10 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import { resolveUserDataPath } from "./DesktopUserData.ts";
 
@@ -33,9 +35,28 @@ it.effect("identifies a failed source read and preserves its cause", () => {
         readFileString: () => Effect.fail(cause),
       }),
     ),
-    Effect.provide(NodeServices.layer),
+    Effect.provide(Layer.mergeAll(NodeServices.layer, Path.layer)),
   );
 });
+
+it.effect("keeps the fork's Electron profile separate without adopting installed data", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cua-profile-" });
+    const destination = path.join(directory, "fork", "electron");
+    const selected = yield* resolveUserDataPath({
+      appDataDirectory: path.join(directory, "installed"),
+      isDevelopment: false,
+      platform: "win32",
+    }).pipe(
+      Effect.provideService(HostProcess.Environment, { T3CODE_DESKTOP_USER_DATA: destination }),
+    );
+    assert.equal(selected, destination);
+    assert.isTrue(yield* fs.exists(destination));
+    assert.isFalse(yield* fs.exists(path.join(directory, "installed")));
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
 
 it.effect.each(["t3code", "T3 Code (Alpha)"])(
   "preserves Windows credential keys from %s without copying browser databases",

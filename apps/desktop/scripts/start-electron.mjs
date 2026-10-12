@@ -12,7 +12,15 @@ NodeChildProcess.execFileSync(
 const childEnv = { ...process.env };
 delete childEnv.ELECTRON_RUN_AS_NODE;
 
-const electronCommand = resolveElectronLaunchCommand(["dist-electron/main.cjs"]);
+const debugPort = process.env.T3CODE_DESKTOP_REMOTE_DEBUGGING_PORT?.trim();
+const electronArgs = ["dist-electron/main.cjs"];
+if (debugPort) {
+  if (!/^\d+$/.test(debugPort) || Number(debugPort) < 1024 || Number(debugPort) > 65535) {
+    throw new Error("T3CODE_DESKTOP_REMOTE_DEBUGGING_PORT must be a port from 1024 to 65535.");
+  }
+  electronArgs.push(`--remote-debugging-port=${debugPort}`, "--remote-debugging-address=127.0.0.1");
+}
+const electronCommand = resolveElectronLaunchCommand(electronArgs);
 const child = NodeChildProcess.spawn(electronCommand.electronPath, electronCommand.args, {
   stdio: "inherit",
   cwd: desktopDir,

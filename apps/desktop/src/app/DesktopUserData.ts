@@ -3,6 +3,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 export class DesktopUserDataInitializationError extends Schema.TaggedError<DesktopUserDataInitializationError>()(
   "DesktopUserDataInitializationError",
@@ -40,6 +41,23 @@ export const resolveUserDataPath = Effect.fn("desktop.userData.resolveUserDataPa
   }) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const environment = yield* HostProcess.Environment;
+    const isolatedDirectory = environment.T3CODE_DESKTOP_USER_DATA?.trim();
+    if (isolatedDirectory) {
+      const destination = path.resolve(isolatedDirectory);
+      yield* fs
+        .makeDirectory(destination, { recursive: true })
+        .pipe(
+          Effect.mapError((cause) =>
+            DesktopUserDataInitializationError.fromFileSystem(
+              cause,
+              "create-directory",
+              destination,
+            ),
+          ),
+        );
+      return destination;
+    }
     const names = input.isDevelopment
       ? { current: "t3code-dev", legacy: "T3 Code (Dev)" }
       : { current: "t3code-v2", legacy: "T3 Code (Alpha)" };

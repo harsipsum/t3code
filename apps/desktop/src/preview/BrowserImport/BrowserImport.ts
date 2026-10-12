@@ -12,6 +12,7 @@ import type {
 } from "@t3tools/contracts";
 import { BrowserImportFailureReason } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Clock from "effect/Clock";
 import type { Session } from "electron";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -26,6 +27,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as BrowserSession from "../BrowserSession.ts";
 import { ChromiumCookieReadError, readChromiumCookies } from "./ChromiumCookies.ts";
 import type { CookieReadResult } from "./CookieDatabase.ts";
+import { parseChromeSessionSnapshot } from "./ChromeSessionSnapshot.ts";
 import { FirefoxCookieReadError, readFirefoxCookies } from "./FirefoxCookies.ts";
 import { readSafariCookies, safariAccessDenied, SafariCookieReadError } from "./SafariCookies.ts";
 import {
@@ -177,6 +179,35 @@ export const make = Effect.gen(function* BrowserImportMake() {
     FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
   >();
   const pathContext = yield* sourcePathContext;
+  const environment = yield* HostProcess.Environment;
+  const workingDirectory = yield* HostProcess.WorkingDirectory;
+  const snapshotPath = pathContext.path.join(
+    environment.T3_COMPUTER_USE_HOME ||
+      pathContext.path.join(workingDirectory, ".t3", "computer-use"),
+    "chrome-session.json",
+  );
+  const readSnapshot = Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const info = yield* fs.stat(snapshotPath);
+    if (info.size > 20_000_000n) {
+      return yield* new BrowserImportFailedError({
+        sourceId: "chrome-extension",
+        reason: "readFailed",
+      });
+    }
+    const text = yield* fs.readFileString(snapshotPath);
+    const now = yield* Clock.currentTimeMillis;
+    return yield* Effect.try({
+      try: () => parseChromeSessionSnapshot(text, now),
+      catch: () =>
+        new BrowserImportFailedError({ sourceId: "chrome-extension", reason: "readFailed" }),
+    });
+  }).pipe(
+    Effect.provide(platformServices),
+    Effect.mapError(
+      () => new BrowserImportFailedError({ sourceId: "chrome-extension", reason: "readFailed" }),
+    ),
+  );
 
   const listSources: Effect.Effect<ReadonlyArray<BrowserImportSource>> = Effect.forEach(
     BROWSER_IMPORT_SOURCES,
@@ -192,7 +223,41 @@ export const make = Effect.gen(function* BrowserImportMake() {
         ...(unavailable === undefined ? {} : { unavailable }),
       } satisfies BrowserImportSource;
     }),
-  ).pipe(Effect.provide(platformServices));
+  ).pipe(
+    Effect.provide(platformServices),
+    Effect.flatMap((sources) =>
+      readSnapshot.pipe(
+        Effect.map((snapshot) => [
+          ...sources,
+          {
+            id: "chrome-extension" as const,
+            name: "Chrome (extension snapshot)",
+            profiles: [
+              {
+                directory: "snapshot",
+                name: `${snapshot.profileName} · ${snapshot.domains.join(", ")} · ${snapshot.capturedAt}`,
+                cookieCount: snapshot.read.cookies.length,
+              },
+            ],
+          },
+        ]),
+        Effect.orElseSucceed(() => [
+          ...sources,
+          {
+            id: "chrome-extension" as const,
+            name: "Chrome (extension snapshot)",
+            profiles: [],
+            setupDirectory: pathContext.path.join(
+              environment.T3_CUA_REPO_ROOT || workingDirectory,
+              "apps",
+              "chrome-extension",
+            ),
+            unavailable: "snapshotMissing" as const,
+          },
+        ]),
+      ),
+    ),
+  );
 
   const importCookies = Effect.fn("BrowserImport.importCookies")(function* (input: {
     readonly input: BrowserImportInput;
@@ -200,6 +265,27 @@ export const make = Effect.gen(function* BrowserImportMake() {
     readonly persistent: boolean;
     readonly namespace?: BrowserSession.BrowserSessionPartitionNamespace;
   }) {
+    if (input.input.sourceId === "chrome-extension") {
+      if (input.input.sourceProfileDirectory !== "snapshot") {
+        return yield* new BrowserImportFailedError({
+          sourceId: "chrome-extension",
+          reason: "unknownSourceProfile",
+        });
+      }
+      const snapshot = yield* readSnapshot;
+      const session = yield* browserSession
+        .getSession(input.scope, input.persistent, input.namespace)
+        .pipe(
+          Effect.mapError(
+            () =>
+              new BrowserImportFailedError({
+                sourceId: "chrome-extension",
+                reason: "sessionUnavailable",
+              }),
+          ),
+        );
+      return yield* writeCookies(session, snapshot.read);
+    }
     const definition = BROWSER_IMPORT_SOURCES.find(
       (candidate) => candidate.id === input.input.sourceId,
     );

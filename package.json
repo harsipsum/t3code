@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "setup:cua": "node scripts/t3-cua-profile.mjs",
+    "install:cua-codex": "node scripts/install-cua-codex.mjs",
+    "start:cua": "node scripts/start-t3-cua.mjs",
     "prepare": "effect-tsgo patch && vp config --no-agent",
     "dev": "node scripts/dev-runner.ts dev",
     "dev:share": "node scripts/dev-runner.ts dev --share",

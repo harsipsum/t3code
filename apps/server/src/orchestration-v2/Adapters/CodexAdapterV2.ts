@@ -1318,12 +1318,12 @@ export function codexThreadRuntimeParams(input: {
       ...(mcpSession === undefined
         ? {}
         : {
-            mcp_servers: {
-              "t3-code": {
-                url: mcpSession.endpoint,
-                http_headers: {
-                  Authorization: mcpSession.authorizationHeader,
-                },
+            // A top-level table replaces the user's other MCP servers on
+            // thread/start. Override only T3's own entry so local tools survive.
+            "mcp_servers.t3-code": {
+              url: mcpSession.endpoint,
+              http_headers: {
+                Authorization: mcpSession.authorizationHeader,
               },
             },
           }),

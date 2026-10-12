@@ -176,7 +176,13 @@ export function BrowserImportWizard({
             source={source}
             reason={step.reason}
             onClose={onClose}
-            onRetry={isRetryableReason(step.reason) ? runImport : undefined}
+            onRetry={
+              step.reason === "snapshotMissing"
+                ? recheckAfterQuit
+                : isRetryableReason(step.reason)
+                  ? runImport
+                  : undefined
+            }
           />
         ) : (
           <ConfigureStep
@@ -593,14 +599,32 @@ function BlockedStep({
   return (
     <>
       <DialogHeader>
-        <DialogTitle>Couldn&rsquo;t import from {source.name}</DialogTitle>
+        <DialogTitle>
+          {reason === "snapshotMissing" ? (
+            "Save a Chrome session"
+          ) : (
+            <>Couldn&rsquo;t import from {source.name}</>
+          )}
+        </DialogTitle>
         <DialogDescription>{BROWSER_IMPORT_FAILURE_COPY[reason]}</DialogDescription>
+        {reason === "snapshotMissing" && source.setupDirectory ? (
+          <p className="text-sm text-muted-foreground">
+            In <code>chrome://extensions</code>, enable Developer mode, select Load unpacked, and
+            choose:
+            <br />
+            <code className="break-all">{source.setupDirectory}</code>
+          </p>
+        ) : null}
       </DialogHeader>
       <DialogFooter>
         <Button variant="outline" onClick={onClose}>
           Close
         </Button>
-        {onRetry ? <Button onClick={onRetry}>Try again</Button> : null}
+        {onRetry ? (
+          <Button onClick={onRetry}>
+            {reason === "snapshotMissing" ? "Check again" : "Try again"}
+          </Button>
+        ) : null}
       </DialogFooter>
     </>
   );

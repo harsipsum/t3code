@@ -18,6 +18,7 @@ import { BrowserProfileId } from "./browserProfile.ts";
 
 const BROWSER_IMPORT_SOURCE_IDS = [
   "chrome",
+  "chrome-extension",
   "edge",
   "brave",
   "vivaldi",
@@ -46,6 +47,7 @@ export const BrowserImportUnavailableReason = Schema.Literals([
   "needsFullDiskAccess",
   "browserRunning",
   "unsupportedPlatform",
+  "snapshotMissing",
 ]);
 export type BrowserImportUnavailableReason = typeof BrowserImportUnavailableReason.Type;
 
@@ -100,6 +102,8 @@ export const BrowserImportSource = Schema.Struct({
   id: BrowserImportSourceId,
   name: TrimmedNonEmptyString,
   profiles: Schema.Array(BrowserImportSourceProfile),
+  /** Directory to load unpacked when this source needs the fork's Chrome extension. */
+  setupDirectory: Schema.optional(TrimmedNonEmptyString),
   /** Absent when the source is importable. */
   unavailable: Schema.optional(BrowserImportUnavailableReason),
 });
@@ -148,6 +152,8 @@ const BROWSER_IMPORT_UNAVAILABLE_COPY: Readonly<Record<BrowserImportUnavailableR
     "Give T3 Code Full Disk Access in System Settings → Privacy & Security, then retry.",
   browserRunning: "Quit the browser first so its cookie database can be read.",
   unsupportedPlatform: "Importing from this browser isn't possible on this platform.",
+  snapshotMissing:
+    "Load the T3 Browser extension in Chrome and follow First-time setup (Windows) in its popup. Start a thread with computer-use tools enabled, then choose Save this site's session for T3. Return here and check again. Cookies are copied into the T3 profile you choose; Chrome stays signed in.",
 };
 
 /** What to tell the user when an attempted import fails. */
