@@ -2234,7 +2234,22 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
 
   return (
     <div className="group flex flex-col items-end gap-1">
-      {userMessage.attribution === "automation" ? (
+      {row.message.origin ? (
+        <p className="me-1 text-2xs text-muted-foreground/70" data-user-message-origin>
+          {/^https?:\/\//i.test(row.message.origin.url ?? "") ? (
+            <a
+              href={row.message.origin.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline"
+            >
+              {row.message.origin.label}
+            </a>
+          ) : (
+            row.message.origin.label
+          )}
+        </p>
+      ) : userMessage.attribution === "automation" ? (
         <p
           className="me-1 text-2xs text-muted-foreground/70"
           data-user-message-attribution="automation"
@@ -2280,7 +2295,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         <UserMessageIntentMarker intent={row.message.inputIntent} />
       ) : null}
       <div className="relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground">
-        <MessageAuthorHeading>You</MessageAuthorHeading>
+        <MessageAuthorHeading>{row.message.origin?.label ?? "You"}</MessageAuthorHeading>
         {(regularImages.length > 0 || userVideos.length > 0) && (
           <div className="mb-2 grid max-w-[210px] grid-cols-2 gap-2">
             {regularImages.map((image) => (

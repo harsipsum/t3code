@@ -19,7 +19,6 @@ import type {
 import type {
   EnvironmentProject,
   EnvironmentThreadShell,
-  ThreadRunSummary,
   ThreadRuntimeSummary,
 } from "@t3tools/client-runtime/state/shell";
 import type { ThreadCheckpointSummary } from "@t3tools/client-runtime/state/thread-checkpoints";
@@ -81,6 +80,7 @@ export function isVideoAttachment(attachment: ChatFileAttachment): boolean {
 }
 
 export interface ChatMessage {
+  readonly origin?: import("@t3tools/contracts").OrchestrationV2MessageOrigin;
   readonly context?: import("@t3tools/contracts").OrchestrationMessageContext | undefined;
   readonly id: MessageId;
   readonly role: "user" | "assistant" | "system";

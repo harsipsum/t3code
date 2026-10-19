@@ -29,6 +29,7 @@ import { useScratchProject } from "../hooks/useScratchProject";
 import { useStableCallback } from "../hooks/useStableCallback";
 import { useProjectScriptEditing } from "./chat/useProjectScriptEditing";
 import { RightPanelSurfaceContent } from "./chat/RightPanelSurfaceContent";
+import { AgentSyncNotice } from "./chat/AgentSyncNotice";
 import { useThreadTerminalActions } from "./terminal/useThreadTerminalActions";
 import { usePendingThreadRequests } from "./chat/usePendingThreadRequests";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
@@ -2537,6 +2538,8 @@ export default function ChatView(props: ChatViewProps) {
       (thread) => thread.id === serverProjection.thread.activeProviderThreadId,
     ),
   );
+  const agentComputer = serverProjection?.thread.agentComputer ?? null;
+  const agentSyncStatus = serverProjection?.thread.syncStatus ?? null;
   const pendingBackgroundTasks = (() => {
     if (serverProjection === null || serverProjection === undefined) {
       return [];
@@ -5988,6 +5991,7 @@ export default function ChatView(props: ChatViewProps) {
     };
     if (
       !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope) ||
+      agentSyncStatus?.readOnly === true ||
       !activeThread ||
       (isSendBusy && !sendQueuesBehindSetup) ||
       isConnecting ||
@@ -7146,6 +7150,7 @@ export default function ChatView(props: ChatViewProps) {
   }) {
     if (
       !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope) ||
+      agentSyncStatus?.readOnly === true ||
       !activeThread ||
       !isServerThread ||
       isSendBusy ||
@@ -7710,6 +7715,7 @@ export default function ChatView(props: ChatViewProps) {
       threadRef={activeThreadRef}
       environmentId={activeThread.environmentId}
       visible={rightPanelOpen}
+      agentComputer={agentComputer}
       composerDraftTarget={composerDraftTarget}
       keybindings={keybindings}
       configuredPreviewUrls={configuredPreviewUrls}
@@ -7879,6 +7885,20 @@ export default function ChatView(props: ChatViewProps) {
               : {})}
           />
         </header>
+
+        <AgentSyncNotice status={agentSyncStatus} />
+
+        {agentComputer && activeThreadRef ? (
+          <div className="flex justify-end px-4 pb-1">
+            <button
+              type="button"
+              className="rounded px-2 py-1 text-xs text-secondary-label hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+              onClick={() => useRightPanelStore.getState().open(activeThreadRef, "agent-computer")}
+            >
+              Computer
+            </button>
+          </div>
+        ) : null}
 
         <div className="relative flex min-h-0 min-w-0 flex-1">
           <ThreadFindCanvas
@@ -8202,17 +8222,19 @@ export default function ChatView(props: ChatViewProps) {
                               sendDisabledReason={
                                 !canOperateThread
                                   ? "This connection cannot change threads."
-                                  : isEnvironmentChanging
-                                    ? "Preparing machine"
-                                    : isRevertingCheckpoint
-                                      ? "Rewinding conversation"
-                                      : feedbackUploading
-                                        ? "Sending feedback"
-                                        : threadDetailLoading
-                                          ? "Messages loading"
-                                          : worktreeSetupBlocksSend
-                                            ? "Preparing worktree"
-                                            : projectCloneSendBlockReason
+                                  : agentSyncStatus?.readOnly
+                                    ? "This agent conversation is read only."
+                                    : isEnvironmentChanging
+                                      ? "Preparing machine"
+                                      : isRevertingCheckpoint
+                                        ? "Rewinding conversation"
+                                        : feedbackUploading
+                                          ? "Sending feedback"
+                                          : threadDetailLoading
+                                            ? "Messages loading"
+                                            : worktreeSetupBlocksSend
+                                              ? "Preparing worktree"
+                                              : projectCloneSendBlockReason
                               }
                               isPreparingWorktree={isPreparingWorktree && !sendQueuesBehindSetup}
                               queuedRunsControl={queuedRunsControl}

@@ -80,6 +80,10 @@ export const useCrewAgentStore = create<CrewAgentStoreState>()(
         const agents = (persisted as Partial<Pick<CrewAgentStoreState, "agents">> | null)?.agents;
         return { agents: Array.isArray(agents) ? agents.filter(isCrewAgent) : [] };
       },
+      merge: (persisted, current) => {
+        const agents = (persisted as { agents?: unknown } | null)?.agents;
+        return { ...current, agents: Array.isArray(agents) ? agents.filter(isCrewAgent) : [] };
+      },
       partialize: ({ agents }) => ({ agents }),
     },
   ),

@@ -3009,12 +3009,11 @@ export default function Sidebar() {
   });
 
   const crewAgents = useCrewAgentStore((state) => state.agents);
+  const crewThreadByKey = new Map(threads.map((thread) => [threadShellKey(thread), thread]));
   const crewThreadKeys = crewAgentKeySet(crewAgents);
-  const crewThreadKeysRef = useRef(crewThreadKeys);
-  crewThreadKeysRef.current = crewThreadKeys;
   const crewAgentEntries = crewAgents.map((agent) => ({
     agent,
-    thread: threadByKey.get(scopedThreadKey(agent.threadRef)) ?? null,
+    thread: crewThreadByKey.get(scopedThreadKey(agent.threadRef)) ?? null,
   }));
   const handleCrewAgentContextMenu = useStableCallback(
     (agent: CrewAgent, position: { x: number; y: number }) => {
@@ -3591,7 +3590,9 @@ export default function Sidebar() {
       list.flatMap((thread) => {
         const key = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
         // Crew agents render above the list instead.
-        return crewThreadKeys.has(key) ? [] : [{ kind: "thread" as const, key, section }];
+        return !isSearchingThreads && crewThreadKeys.has(key)
+          ? []
+          : [{ kind: "thread" as const, key, section }];
       });
     if (
       pinnedThreads.length +
@@ -4291,7 +4292,9 @@ export default function Sidebar() {
                   }
                 : null,
               isPinned,
-              isCrewAgent: crewThreadKeysRef.current.has(threadKey),
+              isCrewAgent: useCrewAgentStore
+                .getState()
+                .agents.some((agent) => scopedThreadKey(agent.threadRef) === threadKey),
               isSettled,
               autoSettleEnabled: thread.autoSettleDisabledAt == null,
               isSnoozed,

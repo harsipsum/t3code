@@ -27,6 +27,7 @@ import { horizontalListSortingStrategy, SortableContext, useSortable } from "@dn
 import { CSS } from "@dnd-kit/utilities";
 import {
   Smartphone,
+  Monitor,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -547,6 +548,8 @@ function surfaceTitle(
   terminalLabelsById: ReadonlyMap<string, string>,
 ): string {
   switch (surface.kind) {
+    case "agent-computer":
+      return "Computer";
     case "diff":
       return "Diff";
     case "files":
@@ -627,6 +630,8 @@ function SurfaceIcon({
   pullRequestStatusSeed: PullRequestTabStatusSeed | undefined;
 }) {
   switch (surface.kind) {
+    case "agent-computer":
+      return <Monitor className="size-3 shrink-0" />;
     case "preview":
       return <PreviewFavicon capturedUrl={previewCapturedUrl} url={previewUrl} />;
     case "diff":

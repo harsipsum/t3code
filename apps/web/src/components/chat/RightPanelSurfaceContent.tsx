@@ -5,6 +5,7 @@ import type {
   ProjectId,
   ResolvedKeybindingsConfig,
   ScopedThreadRef,
+  OrchestrationV2AgentComputer,
   ThreadLinkedPullRequest,
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
@@ -22,6 +23,7 @@ import { PullRequestDetailPanel } from "../pullRequest/PullRequestDetailPanel";
 import { PullRequestDetailGhost } from "../pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "../pullRequest/PullRequestsUnavailableState";
 import { ThreadPullRequestsPanel } from "../pullRequest/ThreadPullRequestsPanel";
+import { AgentComputerPanel } from "./AgentComputerPanel";
 
 const PreviewPanel = lazy(() =>
   import("../preview/PreviewPanel").then((module) => ({ default: module.PreviewPanel })),
@@ -64,6 +66,7 @@ export function RightPanelSurfaceContent(props: {
   readonly threadRef: ScopedThreadRef;
   readonly environmentId: EnvironmentId;
   readonly visible: boolean;
+  readonly agentComputer: OrchestrationV2AgentComputer | null;
   readonly composerDraftTarget: ScopedThreadRef | DraftId;
   readonly keybindings: ResolvedKeybindingsConfig;
   readonly configuredPreviewUrls: ReadonlyArray<string>;
@@ -81,6 +84,14 @@ export function RightPanelSurfaceContent(props: {
   const { surface, threadRef, visible } = props;
   if (surface === null) return null;
   switch (surface.kind) {
+    case "agent-computer":
+      return (
+        <AgentComputerPanel
+          key={scopedThreadKey(threadRef)}
+          computer={props.agentComputer}
+          visible={visible}
+        />
+      );
     case "preview":
       return (
         <Suspense fallback={null}>

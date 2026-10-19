@@ -26,8 +26,8 @@ function initialsOf(name: string): string {
 }
 
 function CrewAvatar(props: { name: string; avatarUrl: string | null; working: boolean }) {
-  const [failed, setFailed] = useState(false);
-  const showImage = props.avatarUrl !== null && !failed;
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const showImage = props.avatarUrl !== null && props.avatarUrl !== failedUrl;
   return (
     <span className="relative inline-flex size-8 shrink-0">
       {showImage ? (
@@ -35,7 +35,8 @@ function CrewAvatar(props: { name: string; avatarUrl: string | null; working: bo
           src={props.avatarUrl!}
           alt=""
           draggable={false}
-          onError={() => setFailed(true)}
+          referrerPolicy="no-referrer"
+          onError={() => setFailedUrl(props.avatarUrl)}
           className="size-8 rounded-full object-cover ring-1 ring-border/60"
         />
       ) : (
@@ -110,11 +111,20 @@ const SidebarCrewAgentRow = memo(function SidebarCrewAgentRow(props: {
         data-testid="sidebar-crew-agent-row"
         data-thread-key={threadKey}
         aria-current={props.isActive ? "page" : undefined}
-        disabled={!available}
-        onClick={(event) => props.onOpen(event, agent.threadRef)}
+        aria-disabled={!available}
+        onClick={(event) => {
+          if (available) props.onOpen(event, agent.threadRef);
+        }}
         onContextMenu={(event) => {
           event.preventDefault();
           props.onContextMenu(agent, { x: event.clientX, y: event.clientY });
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+            event.preventDefault();
+            const rect = event.currentTarget.getBoundingClientRect();
+            props.onContextMenu(agent, { x: rect.left, y: rect.bottom });
+          }
         }}
         className={cn(
           "group/crew-row flex w-full min-w-0 cursor-pointer items-center gap-2.5 rounded-md px-(--sidebar-row-content-inset) py-1.5 text-left outline-none select-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:cursor-default",
