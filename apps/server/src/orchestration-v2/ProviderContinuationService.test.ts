@@ -108,6 +108,36 @@ function layerTest(input: {
 }
 
 describe("ProviderContinuationService", () => {
+  it.effect("dispatches external provider messages with user provenance and origin", () =>
+    Effect.gen(function* () {
+      const dispatched = yield* Queue.unbounded<unknown>();
+      yield* Effect.gen(function* () {
+        const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+        yield* requests.offer({
+          ...request(),
+          detail: "Question typed in another app",
+          messageId: MessageId.make("external-question"),
+          origin: { label: "Typed in connector app", url: "https://example.com/chat" },
+        });
+        const command = yield* Queue.take(dispatched);
+        assert.deepInclude(command, {
+          type: "message.dispatch",
+          messageId: "external-question",
+          text: "Question typed in another app",
+          createdBy: "user",
+          creationSource: "provider",
+          origin: { label: "Typed in connector app", url: "https://example.com/chat" },
+        });
+        assert.isUndefined((command as { notification?: unknown }).notification);
+      }).pipe(
+        Effect.provide(
+          layerTest({ dispatched, getThreadRecords: () => Effect.succeed(projection) }),
+        ),
+        Effect.scoped,
+      );
+    }),
+  );
+
   it.effect("recovers an unaccepted persisted steer using the same delivery identity", () =>
     Effect.gen(function* () {
       const dispatched = yield* Queue.unbounded<unknown>();
