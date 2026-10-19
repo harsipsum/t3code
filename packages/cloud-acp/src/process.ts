@@ -43,14 +43,21 @@ const NON_INTERACTIVE_GIT = { GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -o
  */
 export const readBranchDiff = (cwd: string, branch: string, base: string | undefined) =>
   Effect.gen(function* () {
-    const remoteSha = (ref: string) =>
+    /** Branch or tag name, or a commit sha, fetched by sha. */
+    const remoteSha = (revision: string) =>
       Effect.gen(function* () {
-        const listed = yield* run(
-          "git",
-          ["ls-remote", "--heads", "--", "origin", `refs/heads/${ref}`],
-          { cwd, env: NON_INTERACTIVE_GIT },
-        );
-        const sha = listed.code === 0 ? listed.stdout.split(/\s/)[0] : undefined;
+        let sha: string | undefined = /^[0-9a-f]{40,64}$/.test(revision) ? revision : undefined;
+        if (sha === undefined) {
+          const listed = yield* run(
+            "git",
+            ["ls-remote", "--", "origin", `refs/heads/${revision}`, `refs/tags/${revision}`],
+            { cwd, env: NON_INTERACTIVE_GIT },
+          );
+          // An annotated tag also lists its peeled commit (`^{}`); diff against that.
+          const lines = listed.code === 0 ? listed.stdout.trim().split("\n") : [];
+          const line = lines.find((entry) => entry.endsWith("^{}")) ?? lines[0];
+          sha = line?.split(/\s/)[0];
+        }
         if (!sha || !/^[0-9a-f]{40,64}$/.test(sha)) return undefined;
         const fetched = yield* run("git", ["fetch", "--no-tags", "--", "origin", sha], {
           cwd,
@@ -60,7 +67,9 @@ export const readBranchDiff = (cwd: string, branch: string, base: string | undef
       });
     const head = yield* remoteSha(branch);
     if (head === undefined) return undefined;
-    const baseSha = (base === undefined ? undefined : yield* remoteSha(base)) ?? "HEAD";
+    // A base that cannot be resolved gives no diff rather than one against the wrong commit.
+    const baseSha = base === undefined ? "HEAD" : yield* remoteSha(base);
+    if (baseSha === undefined) return undefined;
     const threeDot = yield* run("git", ["diff", "--no-color", `${baseSha}...${head}`], { cwd });
     // A shallow checkout may not reach the merge base; compare the tips instead.
     const diff =

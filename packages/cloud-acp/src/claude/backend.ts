@@ -194,15 +194,28 @@ export const makeClaudeCloudBackend = (store: SessionStore, version: string) =>
           Deferred.await(input.cancelled).pipe(Effect.as("cancelled" as const)),
         );
         if (first !== "cancelled") return first;
-        const interrupted = yield* Effect.gen(function* () {
-          yield* provide(Api.interruptSession(yield* auth, remoteId));
-          return yield* Fiber.join(followed).pipe(Effect.timeoutOption(INTERRUPT_GRACE));
-        }).pipe(Effect.option);
-        if (Option.isNone(interrupted) || Option.isNone(interrupted.value)) {
+        const sent = yield* Effect.result(
+          Effect.gen(function* () {
+            yield* provide(Api.interruptSession(yield* auth, remoteId));
+          }),
+        );
+        if (sent._tag === "Failure") {
           yield* note(
             input.emit,
             `stop:${remoteId}`,
-            `\n\nStop was sent to the [cloud session](${Api.claudeSessionUrl(remoteId)}), which has not confirmed it; check it there.`,
+            `\n\nStop could not be sent (${sent.failure.message}), so the [cloud session](${Api.claudeSessionUrl(remoteId)}) is still working. Stop it there.`,
+          );
+          return "cancelled" as const;
+        }
+        const settled = yield* Fiber.join(followed).pipe(
+          Effect.timeoutOption(INTERRUPT_GRACE),
+          Effect.option,
+        );
+        if (Option.isNone(settled) || Option.isNone(settled.value)) {
+          yield* note(
+            input.emit,
+            `stop:${remoteId}`,
+            `\n\nStop was sent to the [cloud session](${Api.claudeSessionUrl(remoteId)}), which has not confirmed it yet; check it there.`,
           );
         }
         return "cancelled" as const;

@@ -47,29 +47,46 @@ export interface CloudBackend {
 
 export const LOCAL_SESSION_PREFIX = "t3-cloud-";
 
-const USER_REQUEST = /<user_request>\n?([\s\S]*?)\n?<\/user_request>/;
+/** The exact wrapper t3AcpPromptWithInstructions (provider-core) puts around a prompt. */
+const T3_WRAPPER =
+  /^<t3_code_instructions>\n([\s\S]*?)\n<\/t3_code_instructions>\n\n<user_request>\n([\s\S]*)\n<\/user_request>$/;
+const INTERACTION_MODE = /## T3 Code interaction mode: [\s\S]*?(?=\n\n## |$)/;
+
+export interface CloudPrompt {
+  /** What the user typed, for recognizing `/sync` and T3's restart forms. */
+  readonly userText: string;
+  /** What the cloud session receives. */
+  readonly text: string;
+}
 
 /**
- * The user's words from a T3 ACP prompt. T3 wraps them with its own
- * instructions and appends a runtime block; both describe T3's local harness
- * and MCP tools, which a cloud session does not have, so they stay here.
+ * T3 wraps a prompt with its instructions and appends a runtime block. Only the
+ * interaction mode carries over: Plan's "do not edit" must reach the cloud
+ * session, while the sections about T3's local MCP tools and harness describe
+ * things it does not have.
  */
-export function cloudPromptText(prompt: ReadonlyArray<AcpSchema.ContentBlock>): string {
-  return prompt
-    .flatMap((block) => {
-      switch (block.type) {
-        case "text": {
-          const value = typeof block.text === "string" ? block.text : "";
-          if (value.startsWith("<runtime_info>")) return [];
-          return [USER_REQUEST.exec(value)?.[1] ?? value];
-        }
-        case "resource_link":
-          return [`[${block.name}](${block.uri})`];
-        default:
-          return [`[${block.type} attachment not sent: cloud sessions only take text from T3]`];
-      }
-    })
-    .join("\n");
+export function cloudPrompt(prompt: ReadonlyArray<AcpSchema.ContentBlock>): CloudPrompt {
+  const user: Array<string> = [];
+  const cloud: Array<string> = [];
+  for (const block of prompt) {
+    if (block.type === "text") {
+      const value = typeof block.text === "string" ? block.text : "";
+      if (value.startsWith("<runtime_info>")) continue;
+      const wrapped = T3_WRAPPER.exec(value);
+      const words = wrapped?.[2] ?? value;
+      const mode = wrapped === null ? undefined : INTERACTION_MODE.exec(wrapped[1] ?? "")?.[0];
+      user.push(words);
+      cloud.push(mode === undefined ? words : `${mode}\n\n${words}`);
+    } else {
+      const note =
+        block.type === "resource_link"
+          ? `[${block.name}](${block.uri})`
+          : `[${block.type} attachment not sent: cloud sessions only take text from T3]`;
+      user.push(note);
+      cloud.push(note);
+    }
+  }
+  return { userText: user.join("\n"), text: cloud.join("\n") };
 }
 
 /**
@@ -144,7 +161,7 @@ export const runCloudAgent = (backend: CloudBackend, store: SessionStore) =>
       const cancelled = Deferred.makeUnsafe<void>();
       return Effect.gen(function* () {
         cancellations.set(request.sessionId, cancelled);
-        const text = cloudPromptText(request.prompt);
+        const { userText, text } = cloudPrompt(request.prompt);
         const input: PromptInput = {
           sessionId: request.sessionId,
           cwd: cwds.get(request.sessionId) ?? process.cwd(),
@@ -155,7 +172,9 @@ export const runCloudAgent = (backend: CloudBackend, store: SessionStore) =>
               .sessionUpdate({ sessionId: request.sessionId, update })
               .pipe(Effect.ignore),
         };
-        const stopReason = yield* isSyncPrompt(text) ? backend.sync(input) : backend.prompt(input);
+        const stopReason = yield* isSyncPrompt(userText)
+          ? backend.sync(input)
+          : backend.prompt(input);
         yield* input.emit({ sessionUpdate: "state_update", state: "idle", stopReason });
         return {};
       }).pipe(
