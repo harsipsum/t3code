@@ -4018,6 +4018,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 const merged = {
                   ...current.get(notification.sessionId),
                   ...stateEvent.metadata,
+                  ...(itemIdentityVersion === undefined ? {} : { itemIdentityVersion }),
                 };
                 return [merged, new Map(current).set(notification.sessionId, merged)] as const;
               });

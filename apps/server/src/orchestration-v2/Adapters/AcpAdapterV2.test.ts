@@ -14368,6 +14368,10 @@ it.live("persists ACP sync status before a turn and through cached and disconnec
       const expected = { state, readOnly: true, partial: true, message: `Conversation ${state}` };
       assert.deepEqual(projection.thread.syncStatus, expected);
       assert.deepEqual(projection.providerThreads[0]?.syncStatus, expected);
+      if (state === "disconnected") {
+        assert.equal(projection.providerThreads[0]?.nativeMetadata?.title, "status:cached");
+        assert.equal(projection.providerThreads[0]?.nativeMetadata?.itemIdentityVersion, 2);
+      }
     }
     assert.isTrue(
       Option.isNone(yield* Queue.poll(requests)),
