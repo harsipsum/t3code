@@ -1686,6 +1686,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           text: queuedMessage.text,
           attachments: queuedMessage.attachments,
           ...(queuedMessage.context ? { context: queuedMessage.context } : {}),
+          ...(queuedMessage.origin ? { origin: queuedMessage.origin } : {}),
           createdBy: queuedMessage.createdBy,
           creationSource: queuedMessage.creationSource,
           ...(queuedMessage.scheduledTaskId === undefined
@@ -4966,6 +4967,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           messageId: command.messageId,
           text: dispatchText,
           ...(command.context ? { context: command.context } : {}),
+          ...(command.origin ? { origin: command.origin } : {}),
           attachments: command.attachments,
           createdBy: command.createdBy,
           creationSource: command.creationSource,
@@ -5181,6 +5183,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           role: "user",
           text: dispatchText,
           ...(command.context ? { context: command.context } : {}),
+          ...(command.origin ? { origin: command.origin } : {}),
           attachments: command.attachments,
           streaming: false,
           createdAt: now,
@@ -5525,6 +5528,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           role: "user",
           text: dispatchText,
           ...(command.context ? { context: command.context } : {}),
+          ...(command.origin ? { origin: command.origin } : {}),
           attachments: command.attachments,
           streaming: false,
           createdAt: now,
@@ -5560,6 +5564,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           inputIntent: "turn_start",
           text: dispatchText,
           ...(command.context ? { context: command.context } : {}),
+          ...(command.origin ? { origin: command.origin } : {}),
           attachments: command.attachments,
         };
         const preparationTurnItem: OrchestrationV2TurnItem | null =
@@ -6217,6 +6222,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         role: "user",
         text: dispatchText,
         ...(command.context ? { context: command.context } : {}),
+        ...(command.origin ? { origin: command.origin } : {}),
         attachments: command.attachments,
         streaming: false,
         createdAt: now,
@@ -6250,6 +6256,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         inputIntent: "turn_start",
         text: dispatchText,
         ...(command.context ? { context: command.context } : {}),
+        ...(command.origin ? { origin: command.origin } : {}),
         attachments: command.attachments,
       };
       const activeHandoff = portableForkHandoff ?? mergeBackHandoff ?? providerSwitchHandoff;
@@ -8026,6 +8033,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           text: command.text,
           ...editedAttachments,
           ...(command.context ? { context: command.context } : {}),
+          ...(command.origin ? { origin: command.origin } : {}),
           updatedAt: now,
         },
       });
@@ -8042,6 +8050,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             text: command.text,
             ...editedAttachments,
             ...(command.context ? { context: command.context } : {}),
+            ...(command.origin ? { origin: command.origin } : {}),
             updatedAt: now,
           },
         });
@@ -10291,7 +10300,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : parentProjection.runs.find((candidate) => candidate.id === task.runId);
       const parentNode = parentProjection.nodes.find((candidate) => candidate.id === task.id);
       const parentTurnItem = parentProjection.turnItems.find(
-        (candidate) => candidate.type === "subagent" && candidate.subagentId === task.id,
+        (candidate): candidate is Extract<OrchestrationV2TurnItem, { type: "subagent" }> =>
+          candidate.type === "subagent" && candidate.subagentId === task.id,
       );
       const updatedTask: OrchestrationV2Subagent = {
         ...task,

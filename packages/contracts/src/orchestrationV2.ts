@@ -353,7 +353,22 @@ export const OrchestrationV2LimitRecoveryUpdate = Schema.Struct({
 );
 export type OrchestrationV2LimitRecoveryUpdate = typeof OrchestrationV2LimitRecoveryUpdate.Type;
 
+export const OrchestrationV2MessageOrigin = Schema.Struct({
+  label: TrimmedNonEmptyString,
+  url: Schema.optional(Schema.String),
+});
+export type OrchestrationV2MessageOrigin = typeof OrchestrationV2MessageOrigin.Type;
+
+export const OrchestrationV2AgentComputer = Schema.Struct({
+  url: Schema.String,
+  title: Schema.optional(Schema.String),
+  state: Schema.Literals(["asleep", "connecting", "live", "error"]),
+  message: Schema.optional(Schema.String),
+});
+export type OrchestrationV2AgentComputer = typeof OrchestrationV2AgentComputer.Type;
+
 export const OrchestrationV2AppThread = Schema.Struct({
+  agentComputer: Schema.optional(Schema.NullOr(OrchestrationV2AgentComputer)),
   ...OrchestrationV2CreationFields,
   id: ThreadId,
   projectId: ProjectId,
@@ -857,6 +872,7 @@ export const OrchestrationV2ProviderGoal = Schema.Struct({
 export type OrchestrationV2ProviderGoal = typeof OrchestrationV2ProviderGoal.Type;
 
 export const OrchestrationV2ProviderThread = Schema.Struct({
+  agentComputer: Schema.optional(Schema.NullOr(OrchestrationV2AgentComputer)),
   id: ProviderThreadId,
   driver: ProviderDriverKind,
   providerInstanceId: ProviderInstanceId,
@@ -1099,6 +1115,7 @@ export const OrchestrationV2ConversationMessage = Schema.Struct({
   role: Schema.Literals(["user", "assistant", "system"]),
   text: Schema.String,
   context: Schema.optional(OrchestrationMessageContext),
+  origin: Schema.optional(OrchestrationV2MessageOrigin),
   attachments: Schema.Array(ChatAttachment),
   streaming: Schema.Boolean,
   createdAt: Schema.DateTimeUtc,
@@ -1346,6 +1363,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     inputIntent: OrchestrationV2UserMessageInputIntent,
     text: Schema.String,
     context: Schema.optional(OrchestrationMessageContext),
+    origin: Schema.optional(OrchestrationV2MessageOrigin),
     attachments: Schema.Array(ChatAttachment),
   }),
   Schema.Struct({
@@ -2102,6 +2120,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     inputIntent: OrchestrationV2UserMessageInputIntent,
     text: Schema.String,
     context: Schema.optional(OrchestrationMessageContext),
+    origin: Schema.optional(OrchestrationV2MessageOrigin),
     attachments: Schema.Array(ChatAttachment),
   }),
   Schema.Struct({
@@ -2772,6 +2791,7 @@ export const OrchestrationV2Command = Schema.Union([
     messageId: MessageId,
     text: Schema.String,
     context: Schema.optional(OrchestrationMessageContext),
+    origin: Schema.optional(OrchestrationV2MessageOrigin),
     attachments: Schema.Array(ChatAttachment),
     titleSeed: Schema.optional(TrimmedNonEmptyString),
     modelSelection: Schema.optional(ModelSelection),
@@ -2874,6 +2894,7 @@ export const OrchestrationV2Command = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("queued-run.edit"),
     context: Schema.optional(OrchestrationMessageContext),
+    origin: Schema.optional(OrchestrationV2MessageOrigin),
     commandId: CommandId,
     threadId: ThreadId,
     runId: RunId,
@@ -3154,6 +3175,7 @@ export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
       messageId: Schema.optional(MessageId),
       text: Schema.String,
       context: Schema.optional(OrchestrationMessageContext),
+      origin: Schema.optional(OrchestrationV2MessageOrigin),
       attachments: Schema.Array(ChatAttachment),
     }),
   ),
