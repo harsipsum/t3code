@@ -98,6 +98,7 @@ for await (const line of NodeReadline.createInterface({ input: process.stdin }))
       result = {
         protocolVersion: 1,
         agentInfo: { name: "conversation-sync", version: "1" },
+        _meta: { "t3/nativeConversation": true },
         agentCapabilities: { loadSession: true, sessionCapabilities: { list: {} } },
       };
       break;

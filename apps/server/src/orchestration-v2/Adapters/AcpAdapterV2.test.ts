@@ -14653,6 +14653,7 @@ it.live("syncs external ACP exchanges, deduplicates echoes, and reloads missed h
     const resumedThread = yield* reopened.ensureThread({ threadId, modelSelection, runtimePolicy });
     const caughtUp = yield* reopened.readThreadSnapshot({ providerThread: resumedThread });
     const again = yield* reopened.readThreadSnapshot({ providerThread: resumedThread });
+    assert.equal(caughtUp.messages.filter((message) => message.text === "Typed in T3").length, 1);
     assert.deepEqual(
       caughtUp.messages.map((message) => [message.id, message.text]),
       again.messages.map((message) => [message.id, message.text]),

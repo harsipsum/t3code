@@ -6616,13 +6616,16 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             resolveAttachmentPath: host.resolveAttachmentPath,
           });
           const isNativeSlashCommand = turnInput.message.text.trimStart().startsWith("/");
-          const text = t3AcpPromptWithInstructions({
-            prompt: messageText,
-            state: instructionState,
-            ...(previousInstructionState === undefined
-              ? {}
-              : { previousState: previousInstructionState }),
-          });
+          const text =
+            unknownRecord(started.initializeResult._meta)?.["t3/nativeConversation"] === true
+              ? messageText
+              : t3AcpPromptWithInstructions({
+                  prompt: messageText,
+                  state: instructionState,
+                  ...(previousInstructionState === undefined
+                    ? {}
+                    : { previousState: previousInstructionState }),
+                });
           if (text.length > 0) {
             prompt.push({ type: "text", text });
           }
