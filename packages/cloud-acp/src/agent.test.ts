@@ -23,5 +23,14 @@ describe("cloud prompt", () => {
       ),
     );
     assert.isFalse(isSyncPrompt("Summarize, then continue where you left off."));
+    // After a restart T3 wraps its first prompt in instructions and appends runtime info.
+    const restarted = cloudPromptText([
+      {
+        type: "text",
+        text: "<t3_code_instructions>\n## T3 Code interaction mode: Default\n</t3_code_instructions>\n\n<user_request>\nContinue where you left off.\n</user_request>",
+      },
+      { type: "text", text: "<runtime_info>In case you're asked: ...</runtime_info>" },
+    ]);
+    assert.isTrue(isSyncPrompt(restarted));
   });
 });

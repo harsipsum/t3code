@@ -29,17 +29,25 @@ const RecordJson = Schema.fromJsonString(SessionRecord);
 const decodeRecord = Schema.decodeUnknownOption(RecordJson);
 const encodeRecord = Schema.encodeSync(RecordJson);
 
-export const defaultStateDirectory = Effect.gen(function* () {
-  const env = yield* HostProcess.Environment;
-  if (env.T3_CLOUD_ACP_STATE_DIR) return env.T3_CLOUD_ACP_STATE_DIR;
-  const home = yield* HostProcess.HomeDirectory;
-  const platform = yield* HostProcess.Platform;
-  if (platform === "darwin") return `${home}/Library/Application Support/t3-cloud-acp`;
-  if (platform === "win32") {
-    return `${env.LOCALAPPDATA ?? `${home}\\AppData\\Local`}\\t3-cloud-acp`;
-  }
-  return `${env.XDG_STATE_HOME ?? `${home}/.local/state`}/t3-cloud-acp`;
-});
+/**
+ * T3 gives each Local ACP instance its own directory in its state
+ * (`T3CODE_ACP_STATE_DIR`), so records follow that T3 home's threads. Run
+ * outside T3, the agent keeps them per OS user.
+ */
+export const stateDirectory = (provider: string) =>
+  Effect.gen(function* () {
+    const env = yield* HostProcess.Environment;
+    if (env.T3CODE_ACP_STATE_DIR) return env.T3CODE_ACP_STATE_DIR;
+    const home = yield* HostProcess.HomeDirectory;
+    const platform = yield* HostProcess.Platform;
+    const base =
+      platform === "darwin"
+        ? `${home}/Library/Application Support`
+        : platform === "win32"
+          ? (env.LOCALAPPDATA ?? `${home}\\AppData\\Local`)
+          : (env.XDG_STATE_HOME ?? `${home}/.local/state`);
+    return `${base}/t3-cloud-acp/${provider}`;
+  });
 
 export const makeSessionStore = (directory: string) =>
   Effect.gen(function* () {

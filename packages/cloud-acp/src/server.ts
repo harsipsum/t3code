@@ -11,7 +11,7 @@ import * as EffectAcpAgent from "effect-acp/agent";
 import { runCloudAgent } from "./agent.ts";
 import { makeClaudeCloudBackend } from "./claude/backend.ts";
 import { makeCodexCloudBackend } from "./codex/backend.ts";
-import { defaultStateDirectory, makeSessionStore } from "./state.ts";
+import { makeSessionStore, stateDirectory } from "./state.ts";
 
 const VERSION = "0.1.0";
 
@@ -51,7 +51,7 @@ export function runCloudAcp(argv: ReadonlyArray<string>): void {
     return;
   }
   const program = Effect.gen(function* () {
-    const store = yield* makeSessionStore(`${yield* defaultStateDirectory}/${provider}`);
+    const store = yield* makeSessionStore(yield* stateDirectory(provider));
     const backend =
       provider === "claude"
         ? yield* makeClaudeCloudBackend(store, VERSION)

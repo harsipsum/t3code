@@ -346,6 +346,8 @@ export const makeClaudeCloudBackend = (store: SessionStore, version: string) =>
           const caught = yield* catchUp(input, remoteId);
           const detail = yield* provide(Api.getCloudSession(yield* auth, remoteId));
           if (!Api.isBusyStatus(detail.status)) {
+            // Work that finished while T3 was away still gets its result diff.
+            if (caught.shownCount > 0) yield* emitBranchDiff(input, remoteId);
             if (caught.shownCount === 0) {
               yield* note(
                 input.emit,
