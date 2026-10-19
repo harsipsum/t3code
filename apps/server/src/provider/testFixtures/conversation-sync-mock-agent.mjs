@@ -49,7 +49,7 @@ const exchange = (key) => {
   ];
   history.push(...updates);
   save();
-  updates.forEach(notify);
+  updates.forEach((update) => notify(update));
 };
 const watcher = triggerFile
   ? NodeFS.watch(NodePath.dirname(triggerFile), (_, filename) => {
@@ -116,7 +116,7 @@ for await (const line of NodeReadline.createInterface({ input: process.stdin }))
     case "session/load":
       if (historyFile && NodeFS.existsSync(historyFile))
         history = JSON.parse(NodeFS.readFileSync(historyFile, "utf8"));
-      history.forEach(notify);
+      history.forEach((update) => notify(update));
       result = {
         _meta: {
           "t3/computer": computer,
