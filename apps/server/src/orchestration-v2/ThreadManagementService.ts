@@ -29,11 +29,12 @@ import {
   ProjectId,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   ProviderInstanceId,
+  ProviderSessionId,
   resolveProjectProviderInstanceEnabled,
   RunId,
   type ScheduledTaskId,
   ThreadId,
-  type TurnItemId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
 import * as Context from "effect/Context";
@@ -56,6 +57,9 @@ import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimi
 import { projectTurnItemForDetail } from "./WireProjection.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
+import * as Semaphore from "effect/Semaphore";
 
 export type ThreadManagementSendMode = "auto" | "queue" | "steer" | "restart";
 
@@ -564,6 +568,168 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const nativeSyncPermits = new Map<ThreadId, Semaphore.Semaphore>();
+  const nativeSyncPermitFor = (threadId: ThreadId) => {
+    const existing = nativeSyncPermits.get(threadId);
+    if (existing !== undefined) return existing;
+    const permit = Semaphore.makeUnsafe(1);
+    nativeSyncPermits.set(threadId, permit);
+    return permit;
+  };
+  const nativeRuntimePolicy = yield* Effect.serviceOption(RuntimePolicy.RuntimePolicyV2);
+  const nativeIngestor = yield* Effect.serviceOption(ProviderEventIngestor.ProviderEventIngestorV2);
+  const ensureNativeSession = (threadId: ThreadId) =>
+    nativeSyncPermitFor(threadId).withPermit(
+      Effect.gen(function* () {
+        if (Option.isNone(nativeRuntimePolicy) || Option.isNone(nativeIngestor)) return;
+        const projection = yield* orchestrator.getThreadRecords(threadId, ["providerThreads"]);
+        const thread = projection.thread;
+        const providerThread = projection.providerThreads.find(
+          (candidate) => candidate.id === thread.activeProviderThreadId,
+        );
+        const nativeThreadId = providerThread?.nativeThreadRef?.nativeId;
+        if (
+          providerThread?.driver !== "acpRegistry" ||
+          nativeThreadId == null ||
+          thread.archivedAt !== null ||
+          thread.deletedAt !== null
+        )
+          return;
+        const providerSessionId =
+          providerThread.providerSessionId ??
+          ProviderSessionId.make(`provider-session:external:${threadId}`);
+        if (yield* sessions.isLive(providerSessionId)) return;
+        const records = yield* orchestrator.getThreadRecords(threadId, [
+          "messages",
+          "runs",
+          "turnItems",
+        ]);
+        if (records.runs.some(isActiveRun)) return;
+        const settings = yield* serverSettings.getSettings;
+        if (
+          !resolveProjectProviderInstanceEnabled(
+            settings,
+            thread.projectId,
+            thread.providerInstanceId,
+          )
+        )
+          return;
+        const runtimePolicy = yield* nativeRuntimePolicy.value.resolve({
+          thread,
+          modelSelection: thread.modelSelection,
+        });
+        const runtime = yield* sessions.open({
+          threadId,
+          providerSessionId,
+          modelSelection: thread.modelSelection,
+          runtimePolicy,
+          initialNativeThreadId: nativeThreadId,
+          ...(providerThread.nativeMetadata?.itemIdentityVersion === undefined
+            ? {}
+            : {
+                initialProviderItemIdentityVersion:
+                  providerThread.nativeMetadata.itemIdentityVersion,
+              }),
+        });
+        yield* runtime.ensureThread({
+          threadId,
+          modelSelection: thread.modelSelection,
+          runtimePolicy,
+        });
+        const snapshot = yield* runtime.readThreadSnapshot({ providerThread });
+        const ingest = (
+          event: Parameters<typeof nativeIngestor.value.ingestNormalized>[0]["event"],
+        ) =>
+          nativeIngestor.value.ingestNormalized({
+            providerSessionId,
+            providerInstanceId: thread.providerInstanceId,
+            threadId,
+            event,
+          });
+        yield* ingest({
+          type: "provider_thread.updated",
+          driver: runtime.driver,
+          providerThread: snapshot.providerThread,
+        });
+        let ordinal = records.turnItems.reduce(
+          (maximum, item) => Math.max(maximum, item.ordinal),
+          0,
+        );
+        const previousMessages = new Map(records.messages.map((message) => [message.id, message]));
+        const previousPositions = new Map(
+          records.messages.map((message, index) => [message.id, index]),
+        );
+        const unidentified = new Set(snapshot.unidentifiedMessageIds ?? []);
+        let replayPosition = 0;
+        for (const message of snapshot.messages) {
+          const previous = previousMessages.get(message.id);
+          const position = previousPositions.get(message.id);
+          if (position !== undefined) replayPosition = Math.max(replayPosition, position + 1);
+          if (previous === undefined && unidentified.has(message.id)) {
+            const next = records.messages[replayPosition];
+            if (next?.role === message.role && next.text === message.text) {
+              replayPosition++;
+              continue;
+            }
+          }
+          if (previous !== undefined && previous.creationSource !== "provider") continue;
+          if (
+            previous?.text === message.text &&
+            previous.origin?.label === message.origin?.label &&
+            previous.origin?.url === message.origin?.url
+          )
+            continue;
+          yield* ingest({ type: "message.updated", driver: runtime.driver, message });
+          if (previous === undefined) {
+            const base = {
+              id: TurnItemId.make(`turn-item:external:${message.id}`),
+              threadId,
+              runId: null,
+              nodeId: null,
+              providerThreadId: providerThread.id,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: ++ordinal,
+              status: "completed" as const,
+              title: null,
+              startedAt: message.createdAt,
+              completedAt: message.updatedAt,
+              updatedAt: message.updatedAt,
+            };
+            yield* ingest({
+              type: "turn_item.updated",
+              driver: runtime.driver,
+              turnItem:
+                message.role === "user"
+                  ? {
+                      ...base,
+                      type: "user_message",
+                      messageId: message.id,
+                      text: message.text,
+                      attachments: message.attachments,
+                      createdBy: message.createdBy,
+                      creationSource: message.creationSource,
+                      inputIntent: "turn_start",
+                      ...(message.origin === undefined ? {} : { origin: message.origin }),
+                    }
+                  : {
+                      ...base,
+                      type: "assistant_message",
+                      messageId: message.id,
+                      text: message.text,
+                      streaming: false,
+                    },
+            });
+          }
+        }
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("orchestration-v2.native-session-sync-failed", { threadId, cause }),
+        ),
+      ),
+    );
+
   const ensureProjectionTranscript = (threadId: ThreadId) =>
     ensureLegacyTranscript(threadId).pipe(
       Effect.mapError(
@@ -596,6 +762,7 @@ const make = Effect.gen(function* () {
 
   const getThreadProjection: ThreadManagementServiceShape["getThreadProjection"] = (threadId) =>
     ensureProjectionTranscript(threadId).pipe(
+      Effect.andThen(ensureNativeSession(threadId)),
       Effect.andThen(orchestrator.getThreadProjection(threadId)),
     );
 
@@ -606,6 +773,7 @@ const make = Effect.gen(function* () {
 
   const getThreadSnapshot: ThreadManagementServiceShape["getThreadSnapshot"] = (threadId) =>
     ensureProjectionTranscript(threadId).pipe(
+      Effect.andThen(ensureNativeSession(threadId)),
       Effect.andThen(orchestrator.getThreadSnapshot(threadId)),
     );
   const getThreadTranscript = Effect.fn("orchestrationV2.threadManagement.getThreadTranscript")(
@@ -639,6 +807,7 @@ const make = Effect.gen(function* () {
     options,
   ) =>
     ensureProjectionTranscript(threadId).pipe(
+      Effect.andThen(ensureNativeSession(threadId)),
       Effect.andThen(orchestrator.getThreadSnapshotWindow(threadId, options)),
     );
 
