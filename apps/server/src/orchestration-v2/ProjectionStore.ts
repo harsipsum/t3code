@@ -835,6 +835,9 @@ export function applyToProjection(
                 ...(event.payload.agentComputer === undefined
                   ? {}
                   : { agentComputer: event.payload.agentComputer }),
+                ...(event.payload.syncStatus === undefined
+                  ? {}
+                  : { syncStatus: event.payload.syncStatus }),
               }
             : base.thread,
         providerThreads: upsertById(base.providerThreads, event.payload),
@@ -2285,6 +2288,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   ...(event.payload.agentComputer === undefined
                     ? {}
                     : { agentComputer: event.payload.agentComputer }),
+                  ...(event.payload.syncStatus === undefined
+                    ? {}
+                    : { syncStatus: event.payload.syncStatus }),
                   updatedAt: event.payload.updatedAt,
                 };
                 const updatedThreadPayloadJson = yield* encodeThreadPayload(updatedThread);

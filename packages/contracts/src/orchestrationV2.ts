@@ -359,6 +359,14 @@ export const OrchestrationV2MessageOrigin = Schema.Struct({
 });
 export type OrchestrationV2MessageOrigin = typeof OrchestrationV2MessageOrigin.Type;
 
+export const OrchestrationV2SyncStatus = Schema.Struct({
+  state: Schema.Literals(["connecting", "live", "cached", "disconnected", "needs_reload", "error"]),
+  readOnly: Schema.optional(Schema.Boolean),
+  partial: Schema.optional(Schema.Boolean),
+  message: Schema.optional(Schema.String),
+});
+export type OrchestrationV2SyncStatus = typeof OrchestrationV2SyncStatus.Type;
+
 export const OrchestrationV2AgentComputer = Schema.Struct({
   url: Schema.String,
   title: Schema.optional(Schema.String),
@@ -369,6 +377,7 @@ export type OrchestrationV2AgentComputer = typeof OrchestrationV2AgentComputer.T
 
 export const OrchestrationV2AppThread = Schema.Struct({
   agentComputer: Schema.optional(Schema.NullOr(OrchestrationV2AgentComputer)),
+  syncStatus: Schema.optional(Schema.NullOr(OrchestrationV2SyncStatus)),
   ...OrchestrationV2CreationFields,
   id: ThreadId,
   projectId: ProjectId,
@@ -873,6 +882,7 @@ export type OrchestrationV2ProviderGoal = typeof OrchestrationV2ProviderGoal.Typ
 
 export const OrchestrationV2ProviderThread = Schema.Struct({
   agentComputer: Schema.optional(Schema.NullOr(OrchestrationV2AgentComputer)),
+  syncStatus: Schema.optional(Schema.NullOr(OrchestrationV2SyncStatus)),
   id: ProviderThreadId,
   driver: ProviderDriverKind,
   providerInstanceId: ProviderInstanceId,

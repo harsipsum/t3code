@@ -253,7 +253,8 @@ function sessionScopedRuntimeRequestThreadId(
 ): ThreadId | undefined {
   switch (event.type) {
     case "provider_thread.updated":
-      return event.providerThread.agentComputer !== undefined
+      return event.providerThread.agentComputer !== undefined ||
+        event.providerThread.syncStatus !== undefined
         ? (event.providerThread.appThreadId ?? undefined)
         : undefined;
     case "message.updated":

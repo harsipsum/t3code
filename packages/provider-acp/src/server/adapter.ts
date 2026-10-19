@@ -4,6 +4,7 @@ import {
   type ChatAttachment,
   MessageId,
   OrchestrationV2AgentComputer,
+  OrchestrationV2SyncStatus,
   OrchestrationV2MessageOrigin,
   type ModelSelection,
   type OrchestrationV2ConversationMessage,
@@ -126,6 +127,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 export const ACP_PROTOCOL = "acp.ndjson-jsonrpc" as const;
 
 const decodeAgentComputer = Schema.decodeUnknownOption(OrchestrationV2AgentComputer);
+const decodeSyncStatus = Schema.decodeUnknownOption(OrchestrationV2SyncStatus);
 const decodeMessageOrigin = Schema.decodeUnknownOption(OrchestrationV2MessageOrigin);
 
 /**
@@ -1772,6 +1774,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         const seenExternalUserIds = new Set<string>();
         const origins = new Map<string, OrchestrationV2MessageOrigin>();
         let agentComputer: OrchestrationV2AgentComputer | undefined;
+        let syncStatus: OrchestrationV2SyncStatus | undefined;
         const readOrigin = (notification: EffectAcpSchema.SessionNotification) =>
           decodeMessageOrigin(
             unknownRecord(unknownRecord(notification.update)?._meta)?.["t3/origin"] ??
@@ -3881,13 +3884,23 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             unknownRecord(unknownRecord(update)?._meta)?.["t3/computer"] ??
               unknownRecord(notification._meta)?.["t3/computer"],
           );
-          if (Option.isSome(computer)) {
-            agentComputer = computer.value;
+          const status = decodeSyncStatus(
+            unknownRecord(unknownRecord(update)?._meta)?.["t3/syncStatus"] ??
+              unknownRecord(notification._meta)?.["t3/syncStatus"],
+          );
+          if (Option.isSome(computer)) agentComputer = computer.value;
+          if (Option.isSome(status)) syncStatus = status.value;
+          if (Option.isSome(computer) || Option.isSome(status)) {
             const known = (yield* Ref.get(providerThreadByNativeSessionId)).get(
               notification.sessionId,
             );
             if (known !== undefined) {
-              const providerThread = { ...known, agentComputer, updatedAt: yield* DateTime.now };
+              const providerThread = {
+                ...known,
+                ...(agentComputer === undefined ? {} : { agentComputer }),
+                ...(syncStatus === undefined ? {} : { syncStatus }),
+                updatedAt: yield* DateTime.now,
+              };
               yield* Ref.update(providerThreadByNativeSessionId, (current) =>
                 new Map(current).set(notification.sessionId, providerThread),
               );
@@ -6042,6 +6055,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           unknownRecord(started.sessionSetupResult._meta)?.["t3/computer"],
         );
         if (Option.isSome(initialComputer)) agentComputer = initialComputer.value;
+        const initialStatus = decodeSyncStatus(
+          unknownRecord(started.sessionSetupResult._meta)?.["t3/syncStatus"],
+        );
+        if (Option.isSome(initialStatus)) syncStatus = initialStatus.value;
         yield* Ref.set(activeSessionId, started.sessionId);
         yield* Ref.set(activeSessionSetup, started);
         rememberTerminalEnvironment(started.sessionId, yield* readMcpContext(input.threadId));
@@ -6084,6 +6101,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             unknownRecord(activated.sessionSetupResult._meta)?.["t3/computer"],
           );
           if (Option.isSome(computer)) agentComputer = computer.value;
+          const status = decodeSyncStatus(
+            unknownRecord(activated.sessionSetupResult._meta)?.["t3/syncStatus"],
+          );
+          if (Option.isSome(status)) syncStatus = status.value;
           rememberTerminalEnvironment(activated.sessionId, yield* readMcpContext(threadId));
           return activated;
         });
@@ -6458,6 +6479,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             status:
               flavor.syncExternalMessages && settledStatus === "completed" ? "idle" : "active",
             ...(agentComputer === undefined ? {} : { agentComputer }),
+            ...(syncStatus === undefined ? {} : { syncStatus }),
             lastRunOrdinal: context.input.runOrdinal,
             firstRunOrdinal:
               context.input.providerThread.firstRunOrdinal ?? context.input.runOrdinal,
@@ -7167,11 +7189,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 providerThreadId: providerThread.id,
               });
               yield* Ref.update(providerThreadByNativeSessionId, (current) =>
-                new Map(current).set(sessionId, providerThread),
+                new Map(current).set(sessionId, {
+                  ...providerThread,
+                  ...(syncStatus === undefined ? {} : { syncStatus }),
+                }),
               );
               return {
                 ...providerThread,
                 ...(agentComputer === undefined ? {} : { agentComputer }),
+                ...(syncStatus === undefined ? {} : { syncStatus }),
               };
             },
             (effect, threadInput) =>
@@ -7633,6 +7659,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       unknownRecord(activated.sessionSetupResult._meta)?.["t3/computer"],
                     );
                     if (Option.isSome(computer)) agentComputer = computer.value;
+                    const status = decodeSyncStatus(
+                      unknownRecord(activated.sessionSetupResult._meta)?.["t3/syncStatus"],
+                    );
+                    if (Option.isSome(status)) syncStatus = status.value;
                     rememberTerminalEnvironment(
                       activated.sessionId,
                       yield* readMcpContext(snapshotInput.providerThread.appThreadId),
@@ -7649,6 +7679,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     providerThread: {
                       ...snapshotInput.providerThread,
                       ...(agentComputer === undefined ? {} : { agentComputer }),
+                      ...(syncStatus === undefined ? {} : { syncStatus }),
                       providerSessionId: input.providerSessionId,
                       status:
                         activeContext !== null && !activeContext.finalized

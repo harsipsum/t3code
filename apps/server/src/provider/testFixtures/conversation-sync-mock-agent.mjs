@@ -10,6 +10,9 @@ const triggerFile = process.argv.includes("--trigger-file")
   ? argument("--trigger-file")
   : undefined;
 const sessionId = "conversation-sync-session";
+const reportSyncStatus = process.argv.includes("--sync-status");
+const statusMeta = (state, fields) =>
+  reportSyncStatus ? { "t3/syncStatus": { state, ...fields } } : {};
 const computer = {
   url: "http://localhost:9222/computer",
   title: "Connector computer",
@@ -23,8 +26,12 @@ let history =
 let lastTrigger = "";
 let lastEcho;
 const write = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
-const notify = (update) =>
-  write({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update } });
+const notify = (update, meta) =>
+  write({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: { sessionId, update, ...(meta === undefined ? {} : { _meta: meta }) },
+  });
 const message = (role, text, id, messageOrigin) => ({
   sessionUpdate: role === "user" ? "user_message_chunk" : "agent_message_chunk",
   content: { type: "text", text },
@@ -51,7 +58,22 @@ const watcher = triggerFile
       const key = NodeFS.readFileSync(triggerFile, "utf8");
       if (!key || key === lastTrigger) return;
       lastTrigger = key;
-      if (key === "echo" || key.startsWith("echo-no-id:")) {
+      if (key.startsWith("status:")) {
+        const state = key.slice(7);
+        const meta = statusMeta(state, {
+          readOnly: true,
+          partial: true,
+          message: "Conversation " + state,
+        });
+        notify(
+          {
+            sessionUpdate: "session_info_update",
+            title: key,
+            ...(state === "disconnected" ? {} : { _meta: meta }),
+          },
+          state === "disconnected" ? meta : undefined,
+        );
+      } else if (key === "echo" || key.startsWith("echo-no-id:")) {
         if (lastEcho)
           notify(
             key === "echo"
@@ -80,7 +102,13 @@ for await (const line of NodeReadline.createInterface({ input: process.stdin }))
       };
       break;
     case "session/new":
-      result = { sessionId, _meta: { "t3/computer": computer } };
+      result = {
+        sessionId,
+        _meta: {
+          "t3/computer": computer,
+          ...statusMeta("connecting", { readOnly: true, message: "Opening conversation" }),
+        },
+      };
       break;
     case "session/list":
       result = { sessions: [{ sessionId, cwd: process.cwd(), title: "Connector conversation" }] };
@@ -89,7 +117,12 @@ for await (const line of NodeReadline.createInterface({ input: process.stdin }))
       if (historyFile && NodeFS.existsSync(historyFile))
         history = JSON.parse(NodeFS.readFileSync(historyFile, "utf8"));
       history.forEach(notify);
-      result = { _meta: { "t3/computer": computer } };
+      result = {
+        _meta: {
+          "t3/computer": computer,
+          ...statusMeta("live", { readOnly: false, partial: false }),
+        },
+      };
       break;
     case "session/prompt": {
       const text = request.params.prompt.find((part) => part.type === "text")?.text ?? "";
