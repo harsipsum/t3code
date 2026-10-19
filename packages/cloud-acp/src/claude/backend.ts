@@ -269,7 +269,7 @@ export const makeClaudeCloudBackend = (store: SessionStore, version: string) =>
           );
         }
         const environmentId = yield* resolveEnvironment(token);
-        const firstLine = input.text.trim().split("\n")[0] ?? "T3 Code task";
+        const firstLine = input.userText.trim().split("\n")[0] || "T3 Code task";
         const remoteId = yield* provide(
           Api.createCloudSession(token, {
             title: firstLine.length > 80 ? `${firstLine.slice(0, 77)}...` : firstLine,

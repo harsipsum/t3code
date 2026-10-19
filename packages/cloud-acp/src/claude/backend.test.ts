@@ -181,6 +181,7 @@ const setup = (options: { readonly answer: boolean }) =>
           sessionId: SESSION,
           cwd: root,
           text,
+          userText: text,
           cancelled,
           emit: (update) => Effect.sync(() => void updates.push(update)),
         };

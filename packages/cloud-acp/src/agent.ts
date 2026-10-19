@@ -24,6 +24,8 @@ export interface PromptInput {
   readonly sessionId: string;
   readonly cwd: string;
   readonly text: string;
+  /** What the user typed, without T3's interaction mode. */
+  readonly userText: string;
   readonly emit: Emit;
   /** Resolves when T3 sends `session/cancel` for this prompt. */
   readonly cancelled: Deferred.Deferred<void>;
@@ -76,7 +78,8 @@ export function cloudPrompt(prompt: ReadonlyArray<AcpSchema.ContentBlock>): Clou
       const words = wrapped?.[2] ?? value;
       const mode = wrapped === null ? undefined : INTERACTION_MODE.exec(wrapped[1] ?? "")?.[0];
       user.push(words);
-      cloud.push(mode === undefined ? words : `${mode}\n\n${words}`);
+      // After the request, so a title or summary taken from the first line names the task.
+      cloud.push(mode === undefined ? words : `${words}\n\n${mode}`);
     } else {
       const note =
         block.type === "resource_link"
@@ -166,6 +169,7 @@ export const runCloudAgent = (backend: CloudBackend, store: SessionStore) =>
           sessionId: request.sessionId,
           cwd: cwds.get(request.sessionId) ?? process.cwd(),
           text,
+          userText,
           cancelled,
           emit: (update) =>
             agent.client

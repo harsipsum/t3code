@@ -14,7 +14,7 @@ describe("cloud prompt", () => {
     assert.equal(prompt.userText, "Explain <user_request>tags</user_request> in this parser");
     assert.equal(
       prompt.text,
-      "## T3 Code interaction mode: Plan\n\nDo not edit files.\n\nExplain <user_request>tags</user_request> in this parser",
+      "Explain <user_request>tags</user_request> in this parser\n\n## T3 Code interaction mode: Plan\n\nDo not edit files.",
     );
   });
 

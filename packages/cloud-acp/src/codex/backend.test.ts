@@ -59,6 +59,7 @@ const setup = Effect.gen(function* () {
         sessionId,
         cwd: root,
         text,
+        userText: text,
         cancelled: yield* Deferred.make<void>(),
         emit: (update) =>
           Effect.sync(() => void updates.push(update)).pipe(
