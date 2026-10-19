@@ -193,14 +193,18 @@ export const layer = Layer.effectDiscard(
           threadId: request.threadId,
           messageId,
           text: request.detail ?? CONTINUATION_MESSAGE_TEXT,
-          notification: request.notification ?? {
-            source: { kind: "background_task" },
-            outcome: "updated",
-            summary: "Background activity updated",
-          },
+          ...(request.origin === undefined ? {} : { origin: request.origin }),
+          notification:
+            request.origin !== undefined
+              ? undefined
+              : (request.notification ?? {
+                  source: { kind: "background_task" },
+                  outcome: "updated",
+                  summary: "Background activity updated",
+                }),
           attachments: [],
           dispatchMode: { type: "queue_after_active" },
-          createdBy: "agent",
+          createdBy: request.origin === undefined ? "agent" : "user",
           // "provider" marks an adapter-buffered wake, which ClaudeAdapterV2
           // detects to attach the buffered CLI output and drop this text. A
           // message_text wake has no buffered output, so it must not carry that

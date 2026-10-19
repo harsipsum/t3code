@@ -1237,6 +1237,7 @@ export const layer: Layer.Layer<
         hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,
         message: {
           messageId: message.id,
+          ...(message.origin === undefined ? {} : { origin: message.origin }),
           text: userText,
           attachments: message.attachments,
           createdBy: message.createdBy,

@@ -57,6 +57,7 @@ export type ProviderAdapterV2RuntimePolicy = typeof ProviderAdapterV2RuntimePoli
 
 export const ProviderAdapterV2TurnMessage = Schema.Struct({
   messageId: MessageId,
+  origin: OrchestrationV2ConversationMessage.fields.origin,
   text: Schema.String,
   attachments: Schema.Array(ChatAttachment),
   createdBy: OrchestrationV2ConversationMessage.fields.createdBy,
@@ -448,6 +449,8 @@ export interface ProviderAdapterV2ThreadSnapshot {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly providerTurns: ReadonlyArray<OrchestrationV2ProviderTurn>;
   readonly messages: ReadonlyArray<OrchestrationV2ConversationMessage>;
+  /** Replayed messages without a stable native identity require ordered history matching. */
+  readonly unidentifiedMessageIds?: ReadonlyArray<MessageId>;
   readonly runtimeRequests: ReadonlyArray<OrchestrationV2RuntimeRequest>;
   readonly providerPayload?: unknown;
 }
@@ -560,6 +563,8 @@ export interface ProviderAdapterV2SessionRuntime {
    * thread keeps showing Waiting.
    */
   readonly backgroundTasksEndWithProcess?: true;
+  /** The native conversation can receive messages without an app-owned turn. */
+  readonly receivesExternalMessages?: boolean;
   readonly getModelContextWindow?: (
     modelSelection: ModelSelection,
     cwd?: string | null,

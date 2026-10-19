@@ -1,5 +1,6 @@
 import {
   type OrchestrationV2Notification,
+  type OrchestrationV2MessageOrigin,
   MessageId,
   ProviderDriverKind,
   ProviderThreadId,
@@ -17,6 +18,7 @@ export interface ProviderContinuationRequest {
   readonly providerThreadId: ProviderThreadId;
   readonly driver: ProviderDriverKind;
   readonly detail: string | null;
+  readonly origin?: OrchestrationV2MessageOrigin;
   readonly notification?: OrchestrationV2Notification;
   readonly delegatedCompletion?: {
     readonly parentRunId: RunId;
