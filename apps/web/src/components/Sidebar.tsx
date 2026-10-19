@@ -136,6 +136,9 @@ import {
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
 import { useUiStateStore } from "../uiStateStore";
+import { type CrewAgent, crewAgentKeySet, useCrewAgentStore } from "../crewAgentStore";
+import { requestCrewAgentProfile } from "./CrewAgentProfileDialog";
+import { SidebarCrewAgents } from "./sidebar/SidebarCrewAgents";
 import {
   getThreadKeysToDeselectAfterDelete,
   useThreadSelectionStore,
@@ -3005,6 +3008,63 @@ export default function Sidebar() {
     routeThreadKey,
   });
 
+  const crewAgents = useCrewAgentStore((state) => state.agents);
+  const crewThreadKeys = crewAgentKeySet(crewAgents);
+  const crewThreadKeysRef = useRef(crewThreadKeys);
+  crewThreadKeysRef.current = crewThreadKeys;
+  const crewAgentEntries = crewAgents.map((agent) => ({
+    agent,
+    thread: threadByKey.get(scopedThreadKey(agent.threadRef)) ?? null,
+  }));
+  const handleCrewAgentContextMenu = useStableCallback(
+    (agent: CrewAgent, position: { x: number; y: number }) => {
+      void (async () => {
+        const api = readLocalApi();
+        if (!api) return;
+        const index = useCrewAgentStore
+          .getState()
+          .agents.findIndex(
+            (entry) => scopedThreadKey(entry.threadRef) === scopedThreadKey(agent.threadRef),
+          );
+        const count = useCrewAgentStore.getState().agents.length;
+        const clicked = await settlePromise(() =>
+          api.contextMenu.show(
+            [
+              { id: "edit" as const, label: "Edit crew agent…", icon: "pencil" },
+              ...(index > 0 ? [{ id: "move-up" as const, label: "Move up" }] : []),
+              ...(index < count - 1 ? [{ id: "move-down" as const, label: "Move down" }] : []),
+              {
+                id: "remove" as const,
+                label: "Remove from crew",
+                icon: "pin-off",
+                separatorBefore: true,
+              },
+            ],
+            position,
+          ),
+        );
+        if (clicked._tag === "Failure" || clicked.value === null) return;
+        const store = useCrewAgentStore.getState();
+        switch (clicked.value) {
+          case "edit": {
+            const profile = await requestCrewAgentProfile("edit", agent);
+            if (profile) store.update(agent.threadRef, profile);
+            return;
+          }
+          case "move-up":
+            store.move(agent.threadRef, index - 1);
+            return;
+          case "move-down":
+            store.move(agent.threadRef, index + 1);
+            return;
+          case "remove":
+            store.remove(agent.threadRef);
+            return;
+        }
+      })();
+    },
+  );
+
   const isSearchingThreads = threadSearchQuery.trim().length > 0;
   const threadSearchMatchByKey = new Map(
     threadSearch.matches.map((match) => [threadSearchMatchKey(match), match] as const),
@@ -3528,9 +3588,10 @@ export default function Sidebar() {
       list: readonly EnvironmentThreadShell[],
       section: SidebarSection,
     ): SidebarListItem[] =>
-      list.map((thread) => {
+      list.flatMap((thread) => {
         const key = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-        return { kind: "thread", key, section };
+        // Crew agents render above the list instead.
+        return crewThreadKeys.has(key) ? [] : [{ kind: "thread" as const, key, section }];
       });
     if (
       pinnedThreads.length +
@@ -4230,6 +4291,7 @@ export default function Sidebar() {
                   }
                 : null,
               isPinned,
+              isCrewAgent: crewThreadKeysRef.current.has(threadKey),
               isSettled,
               autoSettleEnabled: thread.autoSettleDisabledAt == null,
               isSnoozed,
@@ -4310,6 +4372,21 @@ export default function Sidebar() {
             return;
           case "unpin":
             attemptUnpin(threadRef);
+            return;
+          case "add-to-crew": {
+            const profile = await requestCrewAgentProfile("add", {
+              name: thread.title,
+              role:
+                providerEntriesByEnvironment
+                  .get(thread.environmentId)
+                  ?.get(thread.providerInstanceId)?.displayName ?? null,
+              avatarUrl: null,
+            });
+            if (profile) useCrewAgentStore.getState().add({ threadRef, ...profile });
+            return;
+          }
+          case "remove-from-crew":
+            useCrewAgentStore.getState().remove(threadRef);
             return;
           case "auto-settle:enabled":
           case "auto-settle:disabled": {
@@ -4681,6 +4758,14 @@ export default function Sidebar() {
               activeSearchResultIndex={activeSearchResultIndex}
               onClearSearch={clearThreadSearch}
             />
+            {isSearchingThreads ? null : (
+              <SidebarCrewAgents
+                entries={crewAgentEntries}
+                activeThreadKey={routeThreadKey}
+                onOpen={handleThreadClick}
+                onContextMenu={handleCrewAgentContextMenu}
+              />
+            )}
           </SidebarGroup>
         }
       >

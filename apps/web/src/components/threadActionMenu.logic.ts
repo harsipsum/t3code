@@ -7,6 +7,8 @@ export type ThreadActionMenuId =
   | "project-settings"
   | "pin"
   | "unpin"
+  | "add-to-crew"
+  | "remove-from-crew"
   | "settle"
   | "unsettle"
   | "auto-settle"
@@ -71,6 +73,8 @@ export interface ThreadActionMenuState {
     readonly isActive: boolean;
   } | null;
   readonly isPinned: boolean;
+  /** Omitted by surfaces that do not offer crew agents. */
+  readonly isCrewAgent?: boolean;
   readonly isSettled: boolean;
   readonly autoSettleEnabled: boolean;
   readonly isSnoozed: boolean;
@@ -93,6 +97,8 @@ export function threadActionRequiresOperate(action: ThreadActionMenuId): boolean
   return ![
     "new-thread-on-branch",
     "project-settings",
+    "add-to-crew",
+    "remove-from-crew",
     "mark-unread",
     "copy",
     "copy-path",
@@ -121,6 +127,13 @@ export function buildThreadActionMenuItems(
             : { id: "pin" as const, label: "Pin thread", icon: "pin" },
         ]
       : []),
+    ...(state.isCrewAgent === undefined
+      ? []
+      : [
+          state.isCrewAgent
+            ? { id: "remove-from-crew" as const, label: "Remove from crew", icon: "pin-off" }
+            : { id: "add-to-crew" as const, label: "Add to crew…", icon: "pin" },
+        ]),
     ...(state.supports.settlement
       ? [
           state.isSettled
