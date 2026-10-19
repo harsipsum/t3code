@@ -11,12 +11,17 @@ import * as Schema from "effect/Schema";
  * - `remoteId`: sessions T3 starts get an ACP id before the provider assigns
  *   one (the first prompt creates the cloud work), so the mapping keeps import
  *   from creating a second T3 thread for the same cloud session.
- * - `deliveredSequence`: the last provider event shown in T3, so a sync after a
- *   restart or import shows only what T3 has not seen and never repeats a result.
+ * - `deliveredSequence` and `sentMessageUuids`: the last provider event shown
+ *   in T3 and the messages T3 sent, so a sync after a restart or import shows
+ *   only what T3 has not seen and never repeats a message or result.
+ * - `shownDiffHead` / `resultDelivered`: the result diff already shown.
  */
 export const SessionRecord = Schema.Struct({
   remoteId: Schema.optional(Schema.String),
   deliveredSequence: Schema.optional(Schema.Number),
+  sentMessageUuids: Schema.optional(Schema.Array(Schema.String)),
+  shownDiffHead: Schema.optional(Schema.String),
+  resultDelivered: Schema.optional(Schema.Boolean),
 });
 export type SessionRecord = typeof SessionRecord.Type;
 

@@ -147,7 +147,7 @@ function makeCloudSession(options: { readonly answer: boolean }) {
       );
     }),
   );
-  return { http, posted, events, userPosted };
+  return { http, posted, events, userPosted, finishTurn };
 }
 
 const setup = (options: { readonly answer: boolean }) =>
@@ -240,6 +240,25 @@ describe("Claude Code cloud backend", () => {
       assert.equal(yield* Fiber.join(again.fiber), "end_turn");
       assert.notInclude(shownText(again.updates), "1a21831726c77bfce5473f0fc81168f058ef74db");
       assert.include(shownText(again.updates), "nothing new since T3 last showed it");
+    }),
+  );
+
+  it.effect("after T3 dies mid-turn, sync shows only the rest of the turn", () =>
+    Effect.gen(function* () {
+      const { run, cloud } = yield* setup({ answer: false });
+      const turn = yield* run("Long task that outlives T3");
+      yield* Effect.promise(() => cloud.userPosted);
+      // T3 restarting kills this agent process mid-turn; the cloud keeps working.
+      yield* Fiber.interrupt(turn.fiber);
+      const sent = cloud.posted.find((event) => event.type === "user")!;
+      cloud.finishTurn(String(sent.uuid));
+
+      const synced = yield* run("Continue where you left off.", true);
+      assert.equal(yield* Fiber.join(synced.fiber), "end_turn");
+      const text = shownText(synced.updates);
+      assert.notInclude(text, "Long task that outlives T3");
+      assert.notInclude(text, "1a21831726c77bfce5473f0fc81168f058ef74db");
+      assert.equal(cloud.posted.filter((event) => event.type === "user").length, 1);
     }),
   );
 

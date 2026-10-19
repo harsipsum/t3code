@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http";
@@ -16,11 +17,11 @@ import { makeSseDecoder, type SseFrame } from "../sse.ts";
 
 /**
  * Claude Code cloud sessions over the API that `claude --teleport`,
- * `claude -p --cloud <id>` and claude.ai use. The access token is read fresh
- * from Claude Code's own credential store for every request and never stored,
- * as Anthropic's CI guidance for these endpoints recommends; Claude Code keeps
- * refreshing it. Sessions need the `user:sessions:claude_code` scope, which
- * `claude setup-token` tokens lack.
+ * `claude -p --cloud <id>` and claude.ai use. The access token is read from
+ * Claude Code's own credential store for each operation and each stream
+ * reconnect, and never stored, as Anthropic's CI guidance for these endpoints
+ * recommends; Claude Code keeps refreshing it. Sessions need the
+ * `user:sessions:claude_code` scope, which `claude setup-token` tokens lack.
  */
 const API_BASE = "https://api.anthropic.com";
 const LEGACY_SESSIONS_BETA = "ccr-byoc-2025-07-29";
@@ -165,6 +166,12 @@ const failForStatus = (response: HttpClientResponse.HttpClientResponse, what: st
       `${what} failed (HTTP ${response.status})${message ? `: ${message}` : ""}`,
     );
   });
+
+/** A stream with no bytes for this long is reopened from its last event. */
+const STREAM_IDLE = "90 seconds";
+
+/** Failures worth retrying with the same request: transport errors and 5xx. */
+const isTransient = (error: AcpError.AcpError) => /could not reach|HTTP 5\d\d/.test(error.message);
 
 const transportError = (what: string) => (cause: unknown) =>
   AcpError.AcpRequestError.internalError(
@@ -392,6 +399,7 @@ export const streamCloudEvents = (auth: ClaudeAuth, sessionId: string, afterSequ
     }
     const decode = makeSseDecoder();
     return response.stream.pipe(
+      Stream.timeout(STREAM_IDLE),
       Stream.decodeText(),
       Stream.mapError(transportError("Streaming the Claude cloud session")),
       Stream.flatMap((chunk) =>
@@ -435,15 +443,8 @@ export const sendUserMessage = (
       message: { role: "user", content: input.text },
     },
   ]).pipe(
-    Effect.map((body) => {
-      const result =
-        isRecord(body) && Array.isArray(body.results) && isRecord(body.results[0])
-          ? body.results[0]
-          : undefined;
-      const sequence = Number(result?.sequence_num);
-      return Number.isSafeInteger(sequence) ? sequence : undefined;
-    }),
-    Effect.retry({ times: 2 }),
+    Effect.asVoid,
+    Effect.retry({ times: 2, schedule: Schedule.spaced("2 seconds"), while: isTransient }),
   );
 
 /** The same interrupt the Stop button on claude.ai sends. */

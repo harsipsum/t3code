@@ -47,30 +47,44 @@ export interface CloudBackend {
 
 export const LOCAL_SESSION_PREFIX = "t3-cloud-";
 
-/**
- * Prompts that ask for the cloud state instead of new cloud work. T3 sends the
- * restart continuation (apps/server/src/orchestration-v2/RestartContinuation.ts)
- * after its own server restarted; forwarding it would start a cloud turn nobody
- * asked for, while the cloud session never stopped.
- */
-function isSyncPrompt(text: string): boolean {
-  const trimmed = text.trim();
-  return trimmed === "/sync" || trimmed.endsWith("Continue where you left off.");
-}
+const USER_REQUEST = /<user_request>\n?([\s\S]*?)\n?<\/user_request>/;
 
-function promptText(prompt: ReadonlyArray<AcpSchema.ContentBlock>): string {
+/**
+ * The user's words from a T3 ACP prompt. T3 wraps them with its own
+ * instructions and appends a runtime block; both describe T3's local harness
+ * and MCP tools, which a cloud session does not have, so they stay here.
+ */
+export function cloudPromptText(prompt: ReadonlyArray<AcpSchema.ContentBlock>): string {
   return prompt
-    .map((block) => {
+    .flatMap((block) => {
       switch (block.type) {
-        case "text":
-          return block.text;
+        case "text": {
+          const value = typeof block.text === "string" ? block.text : "";
+          if (value.startsWith("<runtime_info>")) return [];
+          return [USER_REQUEST.exec(value)?.[1] ?? value];
+        }
         case "resource_link":
-          return `[${block.name}](${block.uri})`;
+          return [`[${block.name}](${block.uri})`];
         default:
-          return `[${block.type} attachment not sent: cloud sessions only take text from T3]`;
+          return [`[${block.type} attachment not sent: cloud sessions only take text from T3]`];
       }
     })
     .join("\n");
+}
+
+/**
+ * Prompts that ask for the cloud state instead of new cloud work. After its own
+ * restart T3 sends one of the forms in
+ * apps/server/src/orchestration-v2/RestartContinuation.ts; forwarding it would
+ * start a cloud turn nobody asked for, while the cloud session never stopped.
+ */
+export function isSyncPrompt(text: string): boolean {
+  const trimmed = text.trim();
+  return (
+    trimmed === "/sync" ||
+    trimmed === "Continue where you left off." ||
+    trimmed.startsWith("Note: the T3 server restarted, and this background work was cancelled")
+  );
 }
 
 export const runCloudAgent = (backend: CloudBackend, store: SessionStore) =>
@@ -126,11 +140,11 @@ export const runCloudAgent = (backend: CloudBackend, store: SessionStore) =>
 
     yield* agent.handleCloseSession(() => Effect.succeed({}));
 
-    yield* agent.handlePrompt((request) =>
-      Effect.gen(function* () {
-        const cancelled = yield* Deferred.make<void>();
+    yield* agent.handlePrompt((request) => {
+      const cancelled = Deferred.makeUnsafe<void>();
+      return Effect.gen(function* () {
         cancellations.set(request.sessionId, cancelled);
-        const text = promptText(request.prompt);
+        const text = cloudPromptText(request.prompt);
         const input: PromptInput = {
           sessionId: request.sessionId,
           cwd: cwds.get(request.sessionId) ?? process.cwd(),
@@ -144,8 +158,17 @@ export const runCloudAgent = (backend: CloudBackend, store: SessionStore) =>
         const stopReason = yield* isSyncPrompt(text) ? backend.sync(input) : backend.prompt(input);
         yield* input.emit({ sessionUpdate: "state_update", state: "idle", stopReason });
         return {};
-      }).pipe(Effect.ensuring(Effect.sync(() => cancellations.delete(request.sessionId)))),
-    );
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            // A newer prompt may already own this session's entry.
+            if (cancellations.get(request.sessionId) === cancelled) {
+              cancellations.delete(request.sessionId);
+            }
+          }),
+        ),
+      );
+    });
 
     yield* agent.handleCancel((notification) =>
       Effect.suspend(() => {

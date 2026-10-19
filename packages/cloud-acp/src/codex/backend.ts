@@ -11,13 +11,13 @@ import {
   type CloudBackend,
   type PromptInput,
 } from "../agent.ts";
-import { readWorkspaceRepository, run } from "../process.ts";
+import { capPatch, readWorkspaceRepository, run } from "../process.ts";
 import type { SessionStore } from "../state.ts";
 import * as Cli from "./cli.ts";
 
 const POLL_INTERVAL = "10 seconds";
-/** `deliveredSequence` value recording that a finished task's result was shown. */
-const RESULT_DELIVERED = 1;
+/** A watch that may have run for an hour survives a few failed status reads. */
+const MAX_POLL_FAILURES = 3;
 
 const text = (value: string): AcpSchema.ContentBlock => ({ type: "text", text: value });
 
@@ -129,12 +129,12 @@ export const makeCodexCloudBackend = (store: SessionStore, version: string) =>
     ) =>
       Effect.gen(function* () {
         const diff = yield* codexRun(["cloud", "diff", taskId], input.cwd);
-        const patch = diff.code === 0 ? diff.stdout : "";
+        const { text: patch, truncated } = capPatch(diff.code === 0 ? diff.stdout : "");
         if (patch.trim() !== "") {
           yield* input.emit({
             sessionUpdate: "tool_call_update",
             toolCallId: `codex-cloud-diff:${taskId}`,
-            title: "Codex Cloud diff",
+            title: `Codex Cloud diff${truncated ? " (truncated)" : ""}`,
             kind: "read",
             status: "completed",
             content: [{ type: "diff", changes: [], patch: { format: "git_patch", text: patch } }],
@@ -149,20 +149,29 @@ export const makeCodexCloudBackend = (store: SessionStore, version: string) =>
             }. Review, apply or open a PR from [the task](${Cli.codexTaskUrl(taskId)}); \`codex cloud apply ${taskId}\` applies it to this checkout.`,
           ),
         });
-        yield* store.update(input.sessionId, { deliveredSequence: RESULT_DELIVERED });
+        yield* store.update(input.sessionId, { resultDelivered: true });
       });
 
     /** Polls until the task settles. Stop ends T3's wait only: Codex Cloud keeps running. */
     const watch = (input: PromptInput, taskId: string) =>
       Effect.gen(function* () {
         let last = "";
+        let failures = 0;
         while (true) {
-          const { status, task } = yield* readStatus(taskId);
-          if (status !== last) {
+          const read = yield* Effect.result(readStatus(taskId));
+          if (read._tag === "Failure") {
+            if (read.failure.code === -32000 || ++failures >= MAX_POLL_FAILURES) {
+              return yield* read.failure;
+            }
+          }
+          const { status, task } =
+            read._tag === "Success" ? read.success : { status: last, task: undefined };
+          if (read._tag === "Success") failures = 0;
+          if (read._tag === "Success" && status !== last) {
             yield* input.emit(statusRow(taskId, status, task?.title));
             last = status;
           }
-          if (Cli.isTerminalCodexStatus(status)) {
+          if (read._tag === "Success" && Cli.isTerminalCodexStatus(status)) {
             yield* deliverResult(input, taskId, status, task);
             return "end_turn" as const;
           }
@@ -227,7 +236,7 @@ export const makeCodexCloudBackend = (store: SessionStore, version: string) =>
           }
           const { status } = yield* readStatus(taskId);
           const record = yield* store.read(input.sessionId);
-          if (Cli.isTerminalCodexStatus(status) && record.deliveredSequence === RESULT_DELIVERED) {
+          if (Cli.isTerminalCodexStatus(status) && record.resultDelivered === true) {
             yield* input.emit(statusRow(taskId, status, "Already shown in this thread."));
             return "end_turn" as const;
           }
@@ -255,6 +264,7 @@ export const makeCodexCloudBackend = (store: SessionStore, version: string) =>
               "--env",
               environment,
               ...(repository?.branch === undefined ? [] : ["--branch", repository.branch]),
+              "--",
               input.text,
             ],
             input.cwd,

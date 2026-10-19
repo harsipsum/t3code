@@ -21,6 +21,8 @@ import { makeClaudeTranscriptMapper, type TurnOutcome } from "./transcript.ts";
 
 /** A long cloud session is summarized on sync; the full transcript stays on claude.ai. */
 const MAX_SYNCED_EVENTS = 300;
+/** Messages T3 sent that a later sync recognizes as its own; older ones are long delivered. */
+const MAX_REMEMBERED_MESSAGES = 50;
 /** After Stop, wait this long for the interrupted turn's own result. */
 const INTERRUPT_GRACE = "30 seconds";
 
@@ -28,20 +30,6 @@ const text = (value: string): AcpSchema.ContentBlock => ({ type: "text", text: v
 
 const note = (emit: Emit, id: string, body: string) =>
   emit({ sessionUpdate: "agent_message_chunk", messageId: `note:${id}`, content: text(body) });
-
-function topLevelUserUuid(payload: unknown): string | undefined {
-  if (typeof payload !== "object" || payload === null) return undefined;
-  const event = payload as Record<string, unknown>;
-  if (event.type !== "user" || event.parent_tool_use_id != null || event.isSynthetic === true) {
-    return undefined;
-  }
-  const message = event.message as { content?: unknown } | undefined;
-  const content = message?.content;
-  const isToolResult =
-    Array.isArray(content) &&
-    content.some((part) => (part as { type?: unknown } | null)?.type === "tool_result");
-  return isToolResult || typeof event.uuid !== "string" ? undefined : event.uuid;
-}
 
 export const makeClaudeCloudBackend = (store: SessionStore, version: string) =>
   Effect.gen(function* () {
@@ -59,30 +47,12 @@ export const makeClaudeCloudBackend = (store: SessionStore, version: string) =>
     const markDelivered = (sessionId: string, sequence: number) =>
       store.update(sessionId, { deliveredSequence: sequence });
 
-    /** Shows events after T3's delivered cursor; returns a turn still waiting for its result. */
-    const catchUp = (input: PromptInput, remoteId: string, token: Api.ClaudeAuth) =>
+    /** Shows the events after T3's delivered cursor, the last MAX_SYNCED_EVENTS of them. */
+    const catchUp = (input: PromptInput, remoteId: string) =>
       Effect.gen(function* () {
         const record = yield* store.read(input.sessionId);
         const after = record.deliveredSequence ?? 0;
-        const events = yield* provide(Api.readCloudEvents(token, remoteId, after));
-        const mapper = makeClaudeTranscriptMapper({
-          ownUserMessageUuids: new Set(),
-          quoteForeignUserMessages: true,
-          sessionUrl: Api.claudeSessionUrl(remoteId),
-        });
-        let openTurn: string | undefined;
-        for (const event of events) {
-          const uuid = topLevelUserUuid(event.payload);
-          if (uuid !== undefined) openTurn = uuid;
-          const { outcome } = mapper.durable(event.payload);
-          if (
-            outcome !== undefined &&
-            openTurn !== undefined &&
-            outcome.userMessageUuids.includes(openTurn)
-          ) {
-            openTurn = undefined;
-          }
-        }
+        const events = yield* provide(Api.readCloudEvents(yield* auth, remoteId, after));
         const shown = events.slice(-MAX_SYNCED_EVENTS);
         if (events.length > 0) {
           yield* note(
@@ -95,52 +65,55 @@ export const makeClaudeCloudBackend = (store: SessionStore, version: string) =>
             }.\n\n`,
           );
         }
-        const renderer = makeClaudeTranscriptMapper({
-          ownUserMessageUuids: new Set(),
+        const mapper = makeClaudeTranscriptMapper({
+          ownUserMessageUuids: new Set(record.sentMessageUuids ?? []),
           quoteForeignUserMessages: true,
           sessionUrl: Api.claudeSessionUrl(remoteId),
+          live: false,
         });
         for (const event of shown) {
-          for (const update of renderer.durable(event.payload).updates) yield* input.emit(update);
+          for (const update of mapper.durable(event.payload).updates) yield* input.emit(update);
         }
         const last = events.at(-1)?.sequence ?? after;
         if (last !== after) yield* markDelivered(input.sessionId, last);
-        return { lastSequence: last, openTurn, shownCount: events.length };
+        return { lastSequence: last, shownCount: events.length };
       });
 
-    const emitBranchDiff = (input: PromptInput, remoteId: string, token: Api.ClaudeAuth) =>
+    /** The pushed branch's diff, once per new head so follow-ups do not repeat it. */
+    const emitBranchDiff = (input: PromptInput, remoteId: string) =>
       Effect.gen(function* () {
-        const detail = yield* provide(Api.getCloudSession(token, remoteId)).pipe(Effect.option);
+        const detail = yield* provide(Api.getCloudSession(yield* auth, remoteId)).pipe(
+          Effect.option,
+        );
         if (Option.isNone(detail) || detail.value.outcomeBranch === undefined) return;
         const diff = yield* provide(
           readBranchDiff(input.cwd, detail.value.outcomeBranch, detail.value.sourceRevision),
         );
         if (diff === undefined || diff.patch.trim() === "") return;
+        if ((yield* store.read(input.sessionId)).shownDiffHead === diff.head) return;
         yield* input.emit({
           sessionUpdate: "tool_call_update",
-          toolCallId: `cloud-diff:${remoteId}:${yield* randomUuidV4}`,
+          toolCallId: `cloud-diff:${remoteId}:${diff.head}`,
           title: `Cloud branch ${detail.value.outcomeBranch}${diff.truncated ? " (truncated)" : ""}`,
           kind: "read",
           status: "completed",
           content: [
-            {
-              type: "diff",
-              changes: [],
-              patch: { format: "git_patch", text: diff.patch },
-            },
+            { type: "diff", changes: [], patch: { format: "git_patch", text: diff.patch } },
           ],
         });
+        yield* store.update(input.sessionId, { shownDiffHead: diff.head });
       });
 
     /**
-     * Follows the live stream until `isDone` accepts a result. The stream
-     * resumes from the last durable event after a dropped connection, so
-     * nothing is shown twice or skipped.
+     * Follows the session until `isDone` accepts a result. Each attempt reads
+     * the login again and resumes after the last shown event, and the cursor is
+     * saved per event, so a reconnect or a T3 restart neither repeats nor skips
+     * anything. When the stream ends and the session is no longer working, the
+     * REST event list settles the turn instead of waiting forever.
      */
     const follow = (
       input: PromptInput,
       remoteId: string,
-      token: Api.ClaudeAuth,
       fromSequence: number,
       isDone: (outcome: TurnOutcome) => boolean,
       ownUserMessageUuids: ReadonlySet<string>,
@@ -150,45 +123,57 @@ export const makeClaudeCloudBackend = (store: SessionStore, version: string) =>
           ownUserMessageUuids,
           quoteForeignUserMessages: true,
           sessionUrl: Api.claudeSessionUrl(remoteId),
+          live: true,
         });
         let last = fromSequence;
         let finished: TurnOutcome | undefined;
+        const take = (event: Api.CloudEvent) =>
+          Effect.gen(function* () {
+            if (event.sequence <= last) return;
+            const { updates, outcome } = mapper.durable(event.payload);
+            for (const update of updates) yield* input.emit(update);
+            last = event.sequence;
+            yield* markDelivered(input.sessionId, last);
+            if (outcome !== undefined && isDone(outcome)) finished = outcome;
+          });
         let failures = 0;
         while (true) {
-          const attempt = yield* provide(
-            Effect.gen(function* () {
-              const stream = yield* Api.streamCloudEvents(token, remoteId, last);
-              failures = 0;
-              yield* stream.pipe(
-                Stream.runForEachWhile((frame) =>
-                  Effect.gen(function* () {
-                    if (frame.kind === "ephemeral") {
-                      for (const update of mapper.ephemeral(frame.payload))
-                        yield* input.emit(update);
-                      return true;
-                    }
-                    if (frame.event.sequence <= last) return true;
-                    const { updates, outcome } = mapper.durable(frame.event.payload);
-                    for (const update of updates) yield* input.emit(update);
-                    last = frame.event.sequence;
-                    if (outcome !== undefined && isDone(outcome)) {
-                      finished = outcome;
-                      yield* markDelivered(input.sessionId, last);
-                      return false;
-                    }
-                    return true;
-                  }),
-                ),
-              );
-            }),
-          ).pipe(Effect.result);
+          mapper.resetStream();
+          const attempt = yield* Effect.gen(function* () {
+            const stream = yield* provide(Api.streamCloudEvents(yield* auth, remoteId, last));
+            failures = 0;
+            yield* stream.pipe(
+              Stream.runForEachWhile((frame) =>
+                Effect.gen(function* () {
+                  if (frame.kind === "ephemeral") {
+                    for (const update of mapper.ephemeral(frame.payload)) yield* input.emit(update);
+                  } else {
+                    yield* take(frame.event);
+                  }
+                  return finished === undefined;
+                }),
+              ),
+            );
+          }).pipe(Effect.result);
           if (finished !== undefined) return finished;
-          yield* markDelivered(input.sessionId, last);
           if (attempt._tag === "Failure") {
-            failures += 1;
-            if (failures >= 5) return yield* attempt.failure;
+            // A rejected login will not fix itself by retrying.
+            if (attempt.failure.code === -32000 || ++failures >= 5) return yield* attempt.failure;
+            yield* Effect.sleep(`${Math.min(15, 2 ** failures)} seconds`);
+            continue;
           }
-          yield* Effect.sleep(`${Math.min(15, 2 ** failures)} seconds`);
+          const detail = yield* provide(Api.getCloudSession(yield* auth, remoteId));
+          if (Api.isBusyStatus(detail.status)) continue;
+          for (const event of yield* provide(Api.readCloudEvents(yield* auth, remoteId, last))) {
+            yield* take(event);
+          }
+          if (finished !== undefined) return finished;
+          yield* note(
+            input.emit,
+            `idle:${remoteId}:${last}`,
+            `\n\nThe [cloud session](${Api.claudeSessionUrl(remoteId)}) is ${detail.status} without finishing this turn; it may be waiting for an answer there.`,
+          );
+          return "idle" as const;
         }
       });
 
@@ -196,27 +181,28 @@ export const makeClaudeCloudBackend = (store: SessionStore, version: string) =>
     const followWithCancel = (
       input: PromptInput,
       remoteId: string,
-      token: Api.ClaudeAuth,
       fromSequence: number,
       isDone: (outcome: TurnOutcome) => boolean,
       ownUserMessageUuids: ReadonlySet<string>,
     ) =>
       Effect.gen(function* () {
         const followed = yield* Effect.forkScoped(
-          follow(input, remoteId, token, fromSequence, isDone, ownUserMessageUuids),
+          follow(input, remoteId, fromSequence, isDone, ownUserMessageUuids),
         );
         const first = yield* Effect.raceFirst(
           Fiber.join(followed),
           Deferred.await(input.cancelled).pipe(Effect.as("cancelled" as const)),
         );
         if (first !== "cancelled") return first;
-        yield* provide(Api.interruptSession(token, remoteId));
-        const settled = yield* Fiber.join(followed).pipe(Effect.timeoutOption(INTERRUPT_GRACE));
-        if (Option.isNone(settled)) {
+        const interrupted = yield* Effect.gen(function* () {
+          yield* provide(Api.interruptSession(yield* auth, remoteId));
+          return yield* Fiber.join(followed).pipe(Effect.timeoutOption(INTERRUPT_GRACE));
+        }).pipe(Effect.option);
+        if (Option.isNone(interrupted) || Option.isNone(interrupted.value)) {
           yield* note(
             input.emit,
             `stop:${remoteId}`,
-            `\n\nStop was sent to the [cloud session](${Api.claudeSessionUrl(remoteId)}), which has not confirmed it yet.`,
+            `\n\nStop was sent to the [cloud session](${Api.claudeSessionUrl(remoteId)}), which has not confirmed it; check it there.`,
           );
         }
         return "cancelled" as const;
@@ -225,19 +211,18 @@ export const makeClaudeCloudBackend = (store: SessionStore, version: string) =>
     const finish = (
       input: PromptInput,
       remoteId: string,
-      token: Api.ClaudeAuth,
-      outcome: TurnOutcome | "cancelled",
+      outcome: TurnOutcome | "cancelled" | "idle",
     ) =>
       Effect.gen(function* () {
         if (outcome === "cancelled") return "cancelled" as const;
-        if (outcome.isError) {
+        if (outcome !== "idle" && outcome.isError) {
           yield* note(
             input.emit,
             `error:${remoteId}`,
             `\n\nThe cloud session ended this turn with an error${outcome.resultText ? `: ${outcome.resultText}` : "."}`,
           );
         }
-        yield* emitBranchDiff(input, remoteId, token);
+        yield* emitBranchDiff(input, remoteId);
         return "end_turn" as const;
       });
 
@@ -357,13 +342,11 @@ export const makeClaudeCloudBackend = (store: SessionStore, version: string) =>
         }),
       sync: (input) =>
         Effect.gen(function* () {
-          const token = yield* auth;
           const remoteId = yield* requireRemote(input.sessionId);
-          const caught = yield* catchUp(input, remoteId, token);
-          const detail = yield* provide(Api.getCloudSession(token, remoteId));
-          if (caught.openTurn === undefined && !Api.isBusyStatus(detail.status)) {
+          const caught = yield* catchUp(input, remoteId);
+          const detail = yield* provide(Api.getCloudSession(yield* auth, remoteId));
+          if (!Api.isBusyStatus(detail.status)) {
             if (caught.shownCount === 0) {
-              // A waiting session needs an answer only claude.ai can give.
               yield* note(
                 input.emit,
                 `idle:${caught.lastSequence}`,
@@ -372,34 +355,35 @@ export const makeClaudeCloudBackend = (store: SessionStore, version: string) =>
             }
             return "end_turn";
           }
-          const openTurn = caught.openTurn;
+          const record = yield* store.read(input.sessionId);
           const outcome = yield* followWithCancel(
             input,
             remoteId,
-            token,
             caught.lastSequence,
-            (result) => openTurn === undefined || result.userMessageUuids.includes(openTurn),
-            new Set(),
+            () => true,
+            new Set(record.sentMessageUuids ?? []),
           );
-          return yield* finish(input, remoteId, token, outcome);
+          return yield* finish(input, remoteId, outcome);
         }),
       prompt: (input) =>
         Effect.gen(function* () {
-          const token = yield* auth;
           const existing = yield* remoteIdFor(input.sessionId);
-          const remoteId = existing ?? (yield* createRemote(input, token));
-          const caught = yield* catchUp(input, remoteId, token);
+          const remoteId = existing ?? (yield* createRemote(input, yield* auth));
+          const caught = yield* catchUp(input, remoteId);
           const uuid = yield* randomUuidV4;
-          yield* provide(Api.sendUserMessage(token, remoteId, { uuid, text: input.text }));
+          const sent = (yield* store.read(input.sessionId)).sentMessageUuids ?? [];
+          yield* store.update(input.sessionId, {
+            sentMessageUuids: [...sent.slice(-(MAX_REMEMBERED_MESSAGES - 1)), uuid],
+          });
+          yield* provide(Api.sendUserMessage(yield* auth, remoteId, { uuid, text: input.text }));
           const outcome = yield* followWithCancel(
             input,
             remoteId,
-            token,
             caught.lastSequence,
             (result) => result.userMessageUuids.includes(uuid),
-            new Set([uuid]),
+            new Set([...sent, uuid]),
           );
-          return yield* finish(input, remoteId, token, outcome);
+          return yield* finish(input, remoteId, outcome);
         }),
     };
     return backend;

@@ -1,52 +1,66 @@
 import { parseGitHubRepositoryNameWithOwnerFromRemoteUrl } from "@t3tools/shared/git";
+import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";
 import * as Effect from "effect/Effect";
 import { ChildProcess } from "effect/process";
 
+/** Runs without a shell; on Windows this also resolves npm `.cmd` shims. */
 export const run = (
   command: string,
   args: ReadonlyArray<string>,
   options: { readonly cwd?: string; readonly env?: Record<string, string> } = {},
 ) =>
-  spawnAndCollect(
-    command,
-    ChildProcess.make(command, [...args], {
-      ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-      ...(options.env === undefined ? {} : { env: options.env, extendEnv: true }),
-    }),
-  );
+  Effect.gen(function* () {
+    const spawn = yield* resolveSpawnCommand(command, args);
+    return yield* spawnAndCollect(
+      command,
+      ChildProcess.make(spawn.command, spawn.args, {
+        shell: spawn.shell,
+        ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+        ...(options.env === undefined ? {} : { env: options.env, extendEnv: true }),
+      }),
+    );
+  });
 
 /** Large enough for a reviewable change, small enough to keep the thread responsive. */
 const MAX_PATCH_BYTES = 200_000;
 
 export interface BranchDiff {
+  readonly head: string;
   readonly patch: string;
   readonly truncated: boolean;
 }
 
+/** Git must fail rather than wait for a password, passphrase or host prompt. */
+const NON_INTERACTIVE_GIT = { GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -o BatchMode=yes" };
+
 /**
  * The cloud session's pushed branch against its base, read with plain git in
- * the project checkout. Fetching only adds remote-tracking objects; the
- * working tree is untouched. Returns undefined when the branch is not
- * reachable, for example before the session pushed.
+ * the project checkout. Refs are resolved with `ls-remote` and fetched by sha,
+ * so nothing is written to the checkout's refs and a concurrent fetch cannot
+ * swap what is compared. Returns undefined when the branch is not reachable,
+ * for example before the session pushed.
  */
 export const readBranchDiff = (cwd: string, branch: string, base: string | undefined) =>
   Effect.gen(function* () {
-    // Resolve each ref through FETCH_HEAD: `origin/<name>` only appears when the
-    // clone's refspec covers it, and this must not write refs of its own.
-    const fetchSha = (ref: string) =>
+    const remoteSha = (ref: string) =>
       Effect.gen(function* () {
-        const fetched = yield* run("git", ["fetch", "--no-tags", "origin", ref], {
+        const listed = yield* run(
+          "git",
+          ["ls-remote", "--heads", "--", "origin", `refs/heads/${ref}`],
+          { cwd, env: NON_INTERACTIVE_GIT },
+        );
+        const sha = listed.code === 0 ? listed.stdout.split(/\s/)[0] : undefined;
+        if (!sha || !/^[0-9a-f]{40,64}$/.test(sha)) return undefined;
+        const fetched = yield* run("git", ["fetch", "--no-tags", "--", "origin", sha], {
           cwd,
-          env: { GIT_TERMINAL_PROMPT: "0" },
+          env: NON_INTERACTIVE_GIT,
         });
-        if (fetched.code !== 0) return undefined;
-        const sha = yield* run("git", ["rev-parse", "FETCH_HEAD"], { cwd });
-        return sha.code === 0 ? sha.stdout.trim() : undefined;
+        return fetched.code === 0 ? sha : undefined;
       });
-    const head = yield* fetchSha(branch);
+    const head = yield* remoteSha(branch);
     if (head === undefined) return undefined;
-    const baseSha = (base === undefined ? undefined : yield* fetchSha(base)) ?? "HEAD";
+    const baseSha = (base === undefined ? undefined : yield* remoteSha(base)) ?? "HEAD";
     const threeDot = yield* run("git", ["diff", "--no-color", `${baseSha}...${head}`], { cwd });
     // A shallow checkout may not reach the merge base; compare the tips instead.
     const diff =
@@ -54,14 +68,19 @@ export const readBranchDiff = (cwd: string, branch: string, base: string | undef
         ? threeDot
         : yield* run("git", ["diff", "--no-color", baseSha, head], { cwd });
     if (diff.code !== 0) return undefined;
-    return diff.stdout.length > MAX_PATCH_BYTES
-      ? { patch: diff.stdout.slice(0, MAX_PATCH_BYTES), truncated: true }
-      : { patch: diff.stdout, truncated: false };
+    const { text, truncated } = capPatch(diff.stdout);
+    return { head, patch: text, truncated } satisfies BranchDiff;
   }).pipe(
     Effect.timeoutOption("60 seconds"),
     Effect.map((result) => (result._tag === "Some" ? result.value : undefined)),
     Effect.orElseSucceed(() => undefined),
   );
+
+export function capPatch(patch: string): { readonly text: string; readonly truncated: boolean } {
+  return patch.length > MAX_PATCH_BYTES
+    ? { text: patch.slice(0, MAX_PATCH_BYTES), truncated: true }
+    : { text: patch, truncated: false };
+}
 
 export interface WorkspaceRepository {
   /** `owner/name` of the GitHub `origin` remote. */

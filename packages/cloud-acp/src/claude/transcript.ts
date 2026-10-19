@@ -92,18 +92,26 @@ export function makeClaudeTranscriptMapper(options: {
   /** Render user turns from other devices (and history) as quoted agent text. */
   readonly quoteForeignUserMessages: boolean;
   readonly sessionUrl: string;
+  /** Live turns show pending approvals; replayed history would show stale ones. */
+  readonly live: boolean;
 }) {
   const streamedText = new Map<string, string>();
   let streamingMessageId: string | undefined;
 
-  // Deltas already shown win: the durable text only adds what streaming missed.
+  // Streamed deltas stay; the durable text adds only what streaming missed.
+  // When deltas were lost across a reconnect the two diverge, and the complete
+  // durable text follows rather than a remainder cut at the wrong place.
   const emitAssistantText = (messageId: string, full: string): ReadonlyArray<SessionUpdate> => {
     const shown = streamedText.get(messageId) ?? "";
-    if (full.length <= shown.length) return [];
+    if (shown.startsWith(full)) return [];
     streamedText.set(messageId, full);
-    return [
-      { sessionUpdate: "agent_message_chunk", messageId, content: text(full.slice(shown.length)) },
-    ];
+    const added = full.startsWith(shown) ? full.slice(shown.length) : `\n\n${full}`;
+    return [{ sessionUpdate: "agent_message_chunk", messageId, content: text(added) }];
+  };
+
+  /** Deltas are not replayed after a reconnect; wait for the next message to start. */
+  const resetStream = () => {
+    streamingMessageId = undefined;
   };
 
   const durable = (
@@ -201,7 +209,7 @@ export function makeClaudeTranscriptMapper(options: {
       // T3 cannot answer the cloud session's approval prompts; say where to.
       case "control_request": {
         const request = isRecord(payload.request) ? payload.request : undefined;
-        if (request?.subtype !== "can_use_tool") return { updates: [] };
+        if (!options.live || request?.subtype !== "can_use_tool") return { updates: [] };
         const tool = str(request.tool_name) ?? "a tool";
         return {
           updates: [
@@ -251,5 +259,5 @@ export function makeClaudeTranscriptMapper(options: {
     return [{ sessionUpdate: "agent_message_chunk", messageId, content: text(delta.text) }];
   };
 
-  return { durable, ephemeral };
+  return { durable, ephemeral, resetStream };
 }
