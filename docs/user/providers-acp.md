@@ -93,6 +93,9 @@ choose a project, and select **List sessions**. Importing one creates a determin
 backed by that native session. Importing the same agent session again returns the existing thread,
 including when another client performs the import.
 
+When a connected agent forwards messages from its own app, they appear live in the same T3 thread.
+Opening an imported session catches up missed messages when the agent supports session loading.
+
 The thread keeps the native session's title and last-update value as provider metadata without
 overwriting a title you set in T3 Code. Agents that report ACP context usage drive the composer's
 context meter and cumulative cost metadata. Text resources and links render as assistant output;

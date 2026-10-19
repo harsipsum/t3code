@@ -95,6 +95,7 @@ export interface AcpSessionRuntimeOptions {
   readonly spawn: AcpSpawnInput;
   readonly cwd: string;
   readonly resumeSessionId?: string;
+  readonly replaySessionHistory?: boolean;
   readonly resumeMethod?: "load" | "resume";
   readonly sessionLoadTimeout?: Duration.Input;
   readonly sessionLoadReplayIdleGap?: Duration.Input;
@@ -1734,26 +1735,27 @@ export const make = (
               }),
             );
           }
-          if (sessionUpdateIsReplay(notification)) {
+          if (sessionUpdateIsReplay(notification) && !options.replaySessionHistory) {
             return;
           }
           const startState = yield* Ref.get(startStateRef);
           if (startState._tag === "Starting") {
-            if (isStartupMetadataUpdate(notification)) {
+            if (options.replaySessionHistory || isStartupMetadataUpdate(notification)) {
               yield* Ref.update(startupMetadataRef, (current) =>
                 [
                   ...current.filter(
                     (previous) =>
+                      options.replaySessionHistory ||
                       previous.sessionId !== notification.sessionId ||
                       previous.update.sessionUpdate !== notification.update.sessionUpdate,
                   ),
                   notification,
-                ].slice(-maxStartupMetadataUpdates),
+                ].slice(options.replaySessionHistory ? 0 : -maxStartupMetadataUpdates),
               );
             }
             return;
           }
-          if (loadingThisSession) {
+          if (loadingThisSession && !options.replaySessionHistory) {
             if (notification.update.sessionUpdate === "config_option_update") {
               const candidateConfigOptions = notification.update.configOptions;
               yield* Ref.update(sessionLoadGateRef, (current) =>
@@ -1773,6 +1775,7 @@ export const make = (
             return;
           }
           if (
+            !options.replaySessionHistory &&
             !(yield* Ref.get(assistantUpdatesOpenRef)) &&
             (notification.update.sessionUpdate === "agent_message_chunk" ||
               notification.update.sessionUpdate === "agent_thought_chunk")

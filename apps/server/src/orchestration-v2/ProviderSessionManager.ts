@@ -252,6 +252,12 @@ function sessionScopedRuntimeRequestThreadId(
   event: ProviderAdapter.ProviderAdapterV2Event,
 ): ThreadId | undefined {
   switch (event.type) {
+    case "provider_thread.updated":
+      return event.providerThread.agentComputer !== undefined
+        ? (event.providerThread.appThreadId ?? undefined)
+        : undefined;
+    case "message.updated":
+      return event.message.runId === null ? event.message.threadId : undefined;
     case "runtime_request.updated":
       return event.runtimeRequest.providerTurnId === null ? event.threadId : undefined;
     case "node.updated":
@@ -1106,6 +1112,7 @@ export const layerWithOptions = (
           const entry = current.get(key);
           if (
             entry === undefined ||
+            entry.runtime.receivesExternalMessages === true ||
             entry.busyTurns.size > 0 ||
             entry.idleGeneration !== input.generation
           ) {
@@ -1201,7 +1208,11 @@ export const layerWithOptions = (
           const key = sessionKey(providerSessionId);
           const current = yield* Ref.get(sessions);
           const entry = current.get(key);
-          if (entry === undefined || entry.busyTurns.size > 0) {
+          if (
+            entry === undefined ||
+            entry.runtime.receivesExternalMessages === true ||
+            entry.busyTurns.size > 0
+          ) {
             return;
           }
 
@@ -1551,7 +1562,12 @@ export const layerWithOptions = (
       ) =>
         Effect.gen(function* () {
           const entry = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));
-          if (entry === undefined || hasBusyTurn(entry, providerThreadId)) return;
+          if (
+            entry === undefined ||
+            entry.runtime.receivesExternalMessages === true ||
+            hasBusyTurn(entry, providerThreadId)
+          )
+            return;
           const tracked = Array.from(entry.idleThreadUnloads).find(
             ([, pending]) => pending.providerThread.id === providerThreadId,
           );

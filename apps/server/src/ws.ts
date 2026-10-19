@@ -1442,7 +1442,19 @@ const layerWsRpc = (
                   }),
               ),
             );
-            if (existing !== null) return { threadId, imported: false } as const;
+            if (existing !== null) {
+              yield* threadManagement.getThreadProjection(threadId).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new AcpRegistryOperationError({
+                      reason: "session_import_failed",
+                      message: "Could not synchronize the imported ACP session.",
+                      cause,
+                    }),
+                ),
+              );
+              return { threadId, imported: false } as const;
+            }
 
             const provider = (yield* providerRegistry.getProviders).find(
               (candidate) => candidate.instanceId === input.instanceId,
@@ -1498,6 +1510,16 @@ const layerWsRpc = (
                 cause: launched.failure,
               });
             }
+            yield* threadManagement.getThreadProjection(threadId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new AcpRegistryOperationError({
+                    reason: "session_import_failed",
+                    message: "Could not synchronize the imported ACP session.",
+                    cause,
+                  }),
+              ),
+            );
             return { threadId, imported: true } as const;
           }),
         );
