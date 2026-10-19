@@ -656,6 +656,13 @@ const make = Effect.gen(function* () {
           0,
         );
         const previousMessages = new Map(records.messages.map((message) => [message.id, message]));
+        const previousTurnItems = new Map(
+          records.turnItems.flatMap((item) =>
+            item.type === "user_message" || item.type === "assistant_message"
+              ? [[item.messageId, item] as const]
+              : [],
+          ),
+        );
         const previousPositions = new Map(
           records.messages.map((message, index) => [message.id, index]),
         );
@@ -680,7 +687,22 @@ const make = Effect.gen(function* () {
           )
             continue;
           yield* ingest({ type: "message.updated", driver: runtime.driver, message });
-          if (previous === undefined) {
+          const previousTurnItem = previousTurnItems.get(message.id);
+          if (previousTurnItem !== undefined) {
+            yield* ingest({
+              type: "turn_item.updated",
+              driver: runtime.driver,
+              turnItem:
+                previousTurnItem.type === "user_message"
+                  ? {
+                      ...previousTurnItem,
+                      text: message.text,
+                      origin: message.origin,
+                      updatedAt: message.updatedAt,
+                    }
+                  : { ...previousTurnItem, text: message.text, updatedAt: message.updatedAt },
+            });
+          } else if (previous === undefined) {
             const base = {
               id: TurnItemId.make(`turn-item:external:${message.id}`),
               threadId,

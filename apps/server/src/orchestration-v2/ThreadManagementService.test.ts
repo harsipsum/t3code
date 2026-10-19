@@ -5,6 +5,7 @@ import {
   NodeId,
   type OrchestrationV2Command,
   type OrchestrationV2ConversationMessage,
+  type OrchestrationV2TurnItem,
   type OrchestrationV2Run,
   type OrchestrationV2Subagent,
   type OrchestrationV2ProviderThread,
@@ -45,7 +46,7 @@ import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 
 it.effect(
-  "opens native ACP sessions from the thread window and catches up once per connection",
+  "opens native ACP sessions from the thread window and refreshes existing turn items without duplicates",
   () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
@@ -58,6 +59,7 @@ it.effect(
         providerSessionId: null,
       } as unknown as OrchestrationV2ProviderThread;
       const persistedMessages: OrchestrationV2ConversationMessage[] = [];
+      const persistedTurnItems: OrchestrationV2TurnItem[] = [];
       const projection = {
         thread: {
           id: threadId,
@@ -71,7 +73,7 @@ it.effect(
         providerThreads: [providerThread],
         messages: persistedMessages,
         runs: [],
-        turnItems: [],
+        turnItems: persistedTurnItems,
       } as unknown as OrchestrationV2ThreadProjection;
       const makeMessage = (id: string, role: "user" | "assistant") => ({
         id: MessageId.make(id),
@@ -87,7 +89,7 @@ it.effect(
         createdAt: now,
         updatedAt: now,
       });
-      let messages = [
+      let messages: OrchestrationV2ConversationMessage[] = [
         makeMessage("native-user-one", "user"),
         makeMessage("native-agent-one", "assistant"),
       ];
@@ -137,8 +139,22 @@ it.effect(
               ingestNormalized: (input) =>
                 Effect.sync(() => {
                   ingested.push(input.event);
-                  if (input.event.type === "message.updated")
-                    persistedMessages.push(input.event.message);
+                  if (input.event.type === "message.updated") {
+                    const updatedMessage = input.event.message;
+                    const index = persistedMessages.findIndex(
+                      (message) => message.id === updatedMessage.id,
+                    );
+                    if (index === -1) persistedMessages.push(input.event.message);
+                    else persistedMessages[index] = input.event.message;
+                  }
+                  if (input.event.type === "turn_item.updated") {
+                    const updatedItem = input.event.turnItem;
+                    const index = persistedTurnItems.findIndex(
+                      (item) => item.id === updatedItem.id,
+                    );
+                    if (index === -1) persistedTurnItems.push(input.event.turnItem);
+                    else persistedTurnItems[index] = input.event.turnItem;
+                  }
                   return [] as never;
                 }),
             }),
@@ -171,6 +187,38 @@ it.effect(
         "Same answer",
       ]);
       expect(ingested.filter((event) => event.type === "turn_item.updated")).toHaveLength(4);
+      const originalItems = persistedTurnItems.map((item, index) => ({
+        ...item,
+        ordinal: 40 + index,
+        runId: RunId.make("original-run"),
+        nodeId: NodeId.make("original-node"),
+      }));
+      persistedTurnItems.splice(0, persistedTurnItems.length, ...originalItems);
+      const userOrigin = { label: "Edited in connected app", url: "https://example.com/edit" };
+      live = false;
+      messages = [
+        { ...makeMessage("native-user-one", "user"), text: "Edited question", origin: userOrigin },
+        { ...makeMessage("native-agent-one", "assistant"), text: "Edited answer" },
+        makeMessage("native-user-two", "user"),
+        makeMessage("native-agent-two", "assistant"),
+      ];
+      yield* service.getThreadSnapshotWindow(threadId, { rowLimit: 50 });
+      expect(persistedMessages).toHaveLength(4);
+      expect(persistedTurnItems).toHaveLength(4);
+      expect(persistedTurnItems[0]).toEqual({
+        ...originalItems[0],
+        text: "Edited question",
+        origin: userOrigin,
+        updatedAt: now,
+      });
+      expect(persistedTurnItems[1]).toEqual({
+        ...originalItems[1],
+        text: "Edited answer",
+        updatedAt: now,
+      });
+      expect(persistedMessages[0]).toMatchObject({ text: "Edited question", origin: userOrigin });
+      expect(persistedMessages[1]).toMatchObject({ text: "Edited answer" });
+      expect(ingested.filter((event) => event.type === "turn_item.updated")).toHaveLength(6);
     }),
 );
 

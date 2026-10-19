@@ -2688,7 +2688,15 @@ it.effect(
             agentComputer: { url: "https://example.com/computer", state: "live" },
           },
         });
-        // A later session event is an ordered barrier after the computer update commits.
+        yield* Queue.offer(queue, {
+          type: "provider_thread.updated",
+          driver: CODEX_DRIVER,
+          providerThread: {
+            ...providerThread,
+            syncStatus: { state: "cached", readOnly: true, partial: true },
+          },
+        });
+        // A later session event is an ordered barrier after both metadata updates commit.
         yield* Queue.offer(queue, {
           type: "provider_session.updated",
           driver: CODEX_DRIVER,
@@ -2703,6 +2711,11 @@ it.effect(
           (yield* store.getThreadRecords(threadId, [])).thread.agentComputer?.state,
           "live",
         );
+        assert.deepEqual((yield* store.getThreadRecords(threadId, [])).thread.syncStatus, {
+          state: "cached",
+          readOnly: true,
+          partial: true,
+        });
         yield* TestClock.adjust("1 hour");
         assert.isTrue(Option.isSome(yield* manager.get(providerSessionId)));
         assert.equal((yield* Ref.get(state)).closeCount, 0);

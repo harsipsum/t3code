@@ -14273,6 +14273,125 @@ describe("acpPostSettleMonitorPromptShouldSuppress", () => {
   });
 });
 
+it.live("persists ACP sync status before a turn and through cached and disconnected updates", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const selfInvocation = yield* resolveSelfInvocation();
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "acp-sync-status-" });
+    const triggerFile = path.join(directory, "trigger.txt");
+    const mockAgentPath = yield* path.fromFileUrl(
+      new URL("../../provider/testFixtures/conversation-sync-mock-agent.mjs", import.meta.url),
+    );
+    const instanceId = ProviderInstanceId.make("sync-status-test");
+    const threadId = ThreadId.make("sync-status-thread");
+    const modelSelection = { instanceId, model: "default" };
+    const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      cwd: directory,
+    });
+    const requests =
+      yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+    const adapter = yield* makeAcpAdapterV2({
+      instanceId,
+      selfInvocation,
+      continuationRequests: {
+        offer: (request) => Queue.offer(requests, request).pipe(Effect.asVoid),
+      },
+      flavor: {
+        driver: ACP_TEST_DRIVER,
+        capabilities: AcpProviderCapabilitiesV2,
+        syncExternalMessages: true,
+        makeRuntime: makeMockRuntime({
+          childProcessSpawner,
+          mockAgentPath,
+          mockAgentArgs: ["--sync-status", "--trigger-file", triggerFile],
+          replaySessionHistory: true,
+        }),
+      },
+    });
+    const runtime = yield* adapter.openSession({
+      threadId,
+      providerSessionId: ProviderSessionId.make("sync-status-session"),
+      modelSelection,
+      runtimePolicy,
+    });
+    const providerThread = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
+    assert.deepEqual(providerThread.syncStatus, {
+      state: "connecting",
+      readOnly: true,
+      message: "Opening conversation",
+    });
+    const now = yield* DateTime.now;
+    const turn = makeTurnInput({ threadId, providerThread, instanceId, runtimePolicy, now });
+    let sequence = 0;
+    yield* store.apply({
+      id: EventId.make(`sync-status-event-${sequence++}`),
+      type: "thread.created",
+      threadId,
+      providerInstanceId: instanceId,
+      occurredAt: now,
+      payload: turn.appThread,
+    });
+    const persist = (thread: OrchestrationV2ProviderThread) =>
+      store.apply({
+        id: EventId.make(`sync-status-event-${sequence++}`),
+        type: "provider-thread.updated",
+        threadId,
+        providerInstanceId: instanceId,
+        occurredAt: now,
+        payload: thread,
+      });
+    yield* persist(providerThread);
+    assert.equal(
+      (yield* store.getThreadRecords(threadId, [])).thread.syncStatus?.state,
+      "connecting",
+    );
+    for (const state of ["cached", "disconnected"] as const) {
+      yield* fs.writeFileString(triggerFile, `status:${state}`);
+      yield* runtime.events.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "provider_thread.updated" &&
+            event.providerThread.syncStatus?.state === state,
+        ),
+        Stream.tap((event) =>
+          event.type === "provider_thread.updated" ? persist(event.providerThread) : Effect.void,
+        ),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+      const projection = yield* store.getThreadRecords(threadId, ["providerThreads"]);
+      const expected = { state, readOnly: true, partial: true, message: `Conversation ${state}` };
+      assert.deepEqual(projection.thread.syncStatus, expected);
+      assert.deepEqual(projection.providerThreads[0]?.syncStatus, expected);
+    }
+    assert.isTrue(
+      Option.isNone(yield* Queue.poll(requests)),
+      "status updates must not start turns",
+    );
+    const loaded = yield* runtime.readThreadSnapshot({ providerThread });
+    yield* persist(loaded.providerThread);
+    assert.deepEqual((yield* store.getThreadRecords(threadId, [])).thread.syncStatus, {
+      state: "live",
+      readOnly: false,
+      partial: false,
+    });
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        layerTest,
+        ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
+      ),
+    ),
+    Effect.timeout("15 seconds"),
+    Effect.scoped,
+  ),
+);
+
 it.live("syncs external ACP exchanges, deduplicates echoes, and reloads missed history", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
