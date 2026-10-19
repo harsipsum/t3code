@@ -248,6 +248,8 @@ function threadManagementFailure(error: unknown): OrchestratorMcpFailure {
       return failure("orchestration_error", error.message);
     case "ThreadManagementProviderInstanceDisabledError":
       return failure("invalid_request", error.message);
+    case "CommandHookBlockedError":
+      return failure("blocked_by_hook", error.message);
   }
 }
 
@@ -2057,7 +2059,8 @@ const make = Effect.gen(function* () {
           })
           .pipe(
             Effect.mapError((error) =>
-              error._tag === "ThreadManagementProviderInstanceDisabledError"
+              error._tag === "ThreadManagementProviderInstanceDisabledError" ||
+              error._tag === "CommandHookBlockedError"
                 ? threadManagementFailure(error)
                 : failure(
                     "orchestration_error",
@@ -2337,6 +2340,44 @@ const make = Effect.gen(function* () {
                 title: request.title,
                 index,
               });
+              const firstMessage =
+                request.prompt === undefined
+                  ? undefined
+                  : ({
+                      type: "message.dispatch",
+                      createdBy: "agent",
+                      creationSource: "mcp",
+                      commandId: stableCommandId({
+                        scope,
+                        requestKey: key,
+                        operation: "dispatch-thread",
+                        index,
+                      }),
+                      threadId,
+                      senderThreadId: scope.thread.threadId,
+                      messageId: stableMessageId({
+                        scope,
+                        requestKey: key,
+                        index,
+                      }),
+                      text: request.prompt,
+                      attachments: [],
+                      modelSelection: target.modelSelection,
+                      dispatchMode: { type: "start_immediately" },
+                    } satisfies ThreadManagementService.AgentDispatchHookCommand);
+              // Checked before the thread exists, so a blocked message leaves no empty thread.
+              if (firstMessage !== undefined) {
+                yield* threadManagement
+                  .checkAgentDispatch({
+                    command: firstMessage,
+                    newThread: {
+                      projectId: parent.thread.projectId,
+                      title,
+                      modelSelection: target.modelSelection,
+                    },
+                  })
+                  .pipe(Effect.mapError(threadManagementFailure));
+              }
               yield* threadManagement
                 .dispatch({
                   type: "thread.create",
@@ -2365,30 +2406,9 @@ const make = Effect.gen(function* () {
                     ),
                   ),
                 );
-              if (request.prompt !== undefined) {
+              if (firstMessage !== undefined) {
                 yield* threadManagement
-                  .dispatch({
-                    type: "message.dispatch",
-                    createdBy: "agent",
-                    creationSource: "mcp",
-                    commandId: stableCommandId({
-                      scope,
-                      requestKey: key,
-                      operation: "dispatch-thread",
-                      index,
-                    }),
-                    threadId,
-                    senderThreadId: scope.thread.threadId,
-                    messageId: stableMessageId({
-                      scope,
-                      requestKey: key,
-                      index,
-                    }),
-                    text: request.prompt,
-                    attachments: [],
-                    modelSelection: target.modelSelection,
-                    dispatchMode: { type: "start_immediately" },
-                  })
+                  .dispatch(firstMessage)
                   .pipe(
                     Effect.mapError((error) =>
                       failure(

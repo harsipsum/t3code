@@ -24,6 +24,8 @@ export interface ProcessRunInput {
   readonly timeout?: Duration.Input | undefined;
   readonly env?: NodeJS.ProcessEnv | undefined;
   readonly stdin?: string | undefined;
+  /** A child may exit or close stdin before reading all of it; its exit code still decides. */
+  readonly allowUnreadStdin?: boolean | undefined;
   /** Receives every stdout chunk, including bytes beyond the buffered output limit. */
   readonly onStdoutChunk?: ((chunk: Uint8Array) => void) | undefined;
   readonly maxOutputBytes?: number | undefined;
@@ -319,19 +321,21 @@ const runProcessCore = Effect.fn("processRunner.runProcessCore")(function* (
   const writeStdin =
     stdin === undefined
       ? Effect.void
-      : Stream.run(Stream.encodeText(Stream.make(stdin)), child.stdin).pipe(
-          Effect.mapError(
-            (cause) =>
-              new ProcessStdinError({
-                command: input.command,
-                argumentCount: input.args.length,
-                cwd: input.cwd,
-                spawnCwd: input.spawnCwd,
-                stdinBytes: Buffer.byteLength(stdin),
-                cause,
-              }),
-          ),
-        );
+      : input.allowUnreadStdin === true
+        ? Stream.run(Stream.encodeText(Stream.make(stdin)), child.stdin).pipe(Effect.ignore)
+        : Stream.run(Stream.encodeText(Stream.make(stdin)), child.stdin).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProcessStdinError({
+                  command: input.command,
+                  argumentCount: input.args.length,
+                  cwd: input.cwd,
+                  spawnCwd: input.spawnCwd,
+                  stdinBytes: Buffer.byteLength(stdin),
+                  cause,
+                }),
+            ),
+          );
 
   const [stdout, stderr] = yield* Effect.all(
     [

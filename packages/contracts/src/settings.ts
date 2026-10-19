@@ -1037,6 +1037,23 @@ export const StorageCleanupSettings = Schema.Struct({
 });
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
+export const CommandHook = Schema.Struct({
+  command: TrimmedNonEmptyString,
+  args: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  timeoutMs: Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 120_000 })).pipe(
+    Schema.withDecodingDefault(Effect.succeed(10_000)),
+  ),
+});
+export type CommandHook = typeof CommandHook.Type;
+
+// Deliberately absent from ServerSettingsPatch: a hook runs a command on this
+// machine, so only someone who can edit settings.json may configure one.
+export const CommandHooks = Schema.Struct({
+  agentDispatch: Schema.NullOr(CommandHook).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  assistantReply: Schema.NullOr(CommandHook).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+});
+export type CommandHooks = typeof CommandHooks.Type;
+
 export const ServerSettings = Schema.Struct({
   // Null means no client has migrated this preference yet; an empty value is
   // authoritative so another device cannot resurrect cleared preferences.
@@ -1200,6 +1217,7 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  hooks: CommandHooks.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   sourceControlHosts: Schema.Record(Schema.String, SourceControlHostSettings).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),

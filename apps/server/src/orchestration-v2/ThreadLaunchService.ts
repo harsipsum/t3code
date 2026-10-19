@@ -177,8 +177,7 @@ export class ThreadLaunchService extends Context.Service<
       input: ThreadLaunchPreparationInput,
     ) => Effect.Effect<
       Orchestrator.OrchestratorV2DispatchResult,
-      | Orchestrator.OrchestratorV2Error
-      | ThreadManagement.ThreadManagementProviderInstanceDisabledError
+      ThreadManagement.ThreadManagementDispatchError
     >;
     readonly prepareRun: (input: ThreadLaunchPreparationInput) => Effect.Effect<void>;
   }
@@ -885,6 +884,60 @@ const make = Effect.gen(function* () {
           yield* validateReusableThread(input, candidateThreadId);
         }
 
+        const initialMessageFields =
+          input.initialMessage === undefined
+            ? undefined
+            : ({
+                type: "message.dispatch",
+                commandId: CommandId.make(`${input.commandId}:initial-message`),
+                threadId: candidateThreadId,
+                messageId:
+                  input.initialMessage.messageId ??
+                  (yield* ids.allocate
+                    .message({ threadId: candidateThreadId, ordinal: 1 })
+                    .pipe(Effect.mapError(mapError(input, "dispatch-message", candidateThreadId)))),
+                text: input.initialMessage.text,
+                ...(input.initialMessage.scheduledTaskId === undefined
+                  ? {}
+                  : { scheduledTaskId: input.initialMessage.scheduledTaskId }),
+                ...(input.initialMessage.senderThreadId === undefined
+                  ? {}
+                  : { senderThreadId: input.initialMessage.senderThreadId }),
+                attachments: input.initialMessage.attachments,
+                ...(input.initialMessage.context ? { context: input.initialMessage.context } : {}),
+                ...(input.generateTitle === true ? { titleSeed: input.title } : {}),
+                modelSelection: input.modelSelection,
+                createdBy: input.createdBy,
+                creationSource: input.creationSource,
+              } as const);
+        const initialMessageFor = (
+          workspaceStrategy: ThreadLaunchWorkspaceStrategy,
+        ):
+          | Extract<ThreadManagement.AgentDispatchHookCommand, { type: "message.dispatch" }>
+          | undefined =>
+          initialMessageFields === undefined
+            ? undefined
+            : { ...initialMessageFields, dispatchMode: { type: "defer_start", workspaceStrategy } };
+        // Checked before the thread or its Scratch folder is claimed, so a blocked message
+        // leaves neither behind. The folder is not known yet, so the hook sees the requested
+        // workspace strategy rather than the resolved folder.
+        const requestedMessage = initialMessageFor(input.workspaceStrategy);
+        if (requestedMessage !== undefined && ThreadManagement.isAgentToolAction(input)) {
+          yield* threads
+            .checkAgentDispatch({
+              command: requestedMessage,
+              ...(input.reuseExistingThread === true
+                ? {}
+                : {
+                    newThread: {
+                      projectId: input.projectId,
+                      title: input.title,
+                      modelSelection: input.modelSelection,
+                    },
+                  }),
+            })
+            .pipe(Effect.mapError(mapError(input, "dispatch-message", candidateThreadId)));
+        }
         const workspaceStrategy: ThreadLaunchWorkspaceStrategy =
           input.workspaceStrategy.type === "root" && Option.isNone(launchReceipt)
             ? Option.match(
@@ -904,6 +957,7 @@ const make = Effect.gen(function* () {
         const initialBranch = workspaceStrategy.branch ?? null;
         const initialWorktreePath =
           workspaceStrategy.type === "existing_worktree" ? workspaceStrategy.worktreePath : null;
+        const initialMessage = initialMessageFor(workspaceStrategy);
         const claimDispatch =
           input.reuseExistingThread === true
             ? threads.dispatch({
@@ -947,36 +1001,11 @@ const make = Effect.gen(function* () {
 
         let runId: RunId | null = null;
         let messageWasAlreadyAccepted = false;
-        if (input.initialMessage !== undefined) {
-          const messageCommandId = CommandId.make(`${input.commandId}:initial-message`);
-          const messageReceipt = yield* readReceipt(input, messageCommandId);
+        if (initialMessage !== undefined) {
+          const messageReceipt = yield* readReceipt(input, initialMessage.commandId);
           messageWasAlreadyAccepted = Option.isSome(messageReceipt);
-          const messageId =
-            input.initialMessage.messageId ??
-            (yield* ids.allocate
-              .message({ threadId, ordinal: 1 })
-              .pipe(Effect.mapError(mapError(input, "dispatch-message", threadId))));
           const dispatched = yield* threads
-            .dispatch({
-              type: "message.dispatch",
-              commandId: messageCommandId,
-              threadId,
-              messageId,
-              text: input.initialMessage.text,
-              ...(input.initialMessage.scheduledTaskId === undefined
-                ? {}
-                : { scheduledTaskId: input.initialMessage.scheduledTaskId }),
-              ...(input.initialMessage.senderThreadId === undefined
-                ? {}
-                : { senderThreadId: input.initialMessage.senderThreadId }),
-              attachments: input.initialMessage.attachments,
-              ...(input.initialMessage.context ? { context: input.initialMessage.context } : {}),
-              ...(input.generateTitle === true ? { titleSeed: input.title } : {}),
-              modelSelection: input.modelSelection,
-              dispatchMode: { type: "defer_start", workspaceStrategy },
-              createdBy: input.createdBy,
-              creationSource: input.creationSource,
-            })
+            .dispatch({ ...initialMessage, threadId })
             .pipe(Effect.mapError(mapError(input, "dispatch-message", threadId)));
           const runCreated = dispatched.storedEvents.find(
             (stored) => stored.event.type === "run.created",

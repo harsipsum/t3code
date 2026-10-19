@@ -1,0 +1,92 @@
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
+
+/**
+ * What this agent must remember across T3 restarts, one file per ACP session so
+ * concurrent agent processes never rewrite each other's records.
+ *
+ * - `remoteId`: sessions T3 starts get an ACP id before the provider assigns
+ *   one (the first prompt creates the cloud work), so the mapping keeps import
+ *   from creating a second T3 thread for the same cloud session.
+ * - `deliveredSequence` and `sentMessageUuids`: the last provider event shown
+ *   in T3 and the messages T3 sent, so a sync after a restart or import shows
+ *   only what T3 has not seen and never repeats a message or result.
+ * - `shownDiffHead` / `resultDelivered`: the result diff already shown.
+ */
+export const SessionRecord = Schema.Struct({
+  remoteId: Schema.optional(Schema.String),
+  deliveredSequence: Schema.optional(Schema.Number),
+  sentMessageUuids: Schema.optional(Schema.Array(Schema.String)),
+  shownDiffHead: Schema.optional(Schema.String),
+  resultDelivered: Schema.optional(Schema.Boolean),
+});
+export type SessionRecord = typeof SessionRecord.Type;
+
+const RecordJson = Schema.fromJsonString(SessionRecord);
+const decodeRecord = Schema.decodeUnknownOption(RecordJson);
+const encodeRecord = Schema.encodeSync(RecordJson);
+
+/**
+ * T3 gives each Local ACP instance its own directory in its state
+ * (`T3CODE_ACP_STATE_DIR`), so records follow that T3 home's threads. Run
+ * outside T3, the agent keeps them per OS user.
+ */
+export const stateDirectory = (provider: string) =>
+  Effect.gen(function* () {
+    const env = yield* HostProcess.Environment;
+    if (env.T3CODE_ACP_STATE_DIR) return env.T3CODE_ACP_STATE_DIR;
+    const home = yield* HostProcess.HomeDirectory;
+    const platform = yield* HostProcess.Platform;
+    const base =
+      platform === "darwin"
+        ? `${home}/Library/Application Support`
+        : platform === "win32"
+          ? (env.LOCALAPPDATA ?? `${home}\\AppData\\Local`)
+          : (env.XDG_STATE_HOME ?? `${home}/.local/state`);
+    return `${base}/t3-cloud-acp/${provider}`;
+  });
+
+export const makeSessionStore = (directory: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const fileFor = (sessionId: string) =>
+      path.join(directory, `${encodeURIComponent(sessionId)}.json`);
+
+    const read = (sessionId: string) =>
+      fs.readFileString(fileFor(sessionId)).pipe(
+        Effect.map((text) => decodeRecord(text)),
+        Effect.map((record) => (record._tag === "Some" ? record.value : {})),
+        Effect.orElseSucceed((): SessionRecord => ({})),
+      );
+
+    const update = (sessionId: string, patch: Partial<SessionRecord>) =>
+      Effect.gen(function* () {
+        const next = { ...(yield* read(sessionId)), ...patch };
+        yield* fs.makeDirectory(directory, { recursive: true });
+        const target = fileFor(sessionId);
+        const temporary = `${target}.${process.pid}.tmp`;
+        yield* fs.writeFileString(temporary, encodeRecord(next));
+        yield* fs.rename(temporary, target);
+      }).pipe(Effect.orDie);
+
+    /** ACP session id for each provider id this agent created, for import dedupe. */
+    const localIdsByRemoteId = Effect.gen(function* () {
+      const names = yield* fs.readDirectory(directory).pipe(Effect.orElseSucceed(() => []));
+      const result = new Map<string, string>();
+      for (const name of names) {
+        if (!name.endsWith(".json")) continue;
+        const sessionId = decodeURIComponent(name.slice(0, -".json".length));
+        const record = yield* read(sessionId);
+        if (record.remoteId !== undefined) result.set(record.remoteId, sessionId);
+      }
+      return result;
+    });
+
+    return { read, update, localIdsByRemoteId };
+  });
+
+export type SessionStore = Effect.Success<ReturnType<typeof makeSessionStore>>;

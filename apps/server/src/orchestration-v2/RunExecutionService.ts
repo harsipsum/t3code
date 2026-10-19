@@ -31,6 +31,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -38,6 +39,7 @@ import * as Stream from "effect/Stream";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as CommandHooks from "../hooks/CommandHooks.ts";
 import * as CheckpointService from "./CheckpointService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -577,6 +579,7 @@ export const layer: Layer.Layer<
     const mcpAppModelContext = yield* McpAppModelContext.McpAppModelContext;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
     const finalizationObserver = yield* RunFinalizationService.RunFinalizationObserver;
+    const commandHooks = yield* Effect.serviceOption(CommandHooks.CommandHooks);
 
     const writeFinalRunEvents = (input: {
       readonly run: OrchestrationV2Run;
@@ -1198,6 +1201,17 @@ export const layer: Layer.Layer<
             return true;
           });
           const filterAssistantEvent = makeAssistantStreamingFilter(responseStreamingMode);
+          const gateAssistantReply = Option.isNone(commandHooks)
+            ? (event: ProviderAdapter.ProviderAdapterV2Event) => Effect.succeed(event)
+            : CommandHooks.makeAssistantReplyGate((reply) =>
+                commandHooks.value.checkAssistantReply({
+                  ...reply,
+                  projectId: input.appThread.projectId,
+                  providerInstanceId: input.run.providerInstanceId,
+                  model: input.modelSelection.model,
+                  responseStreamingMode,
+                }),
+              );
           // Held text writes nothing, so its item would take a position only
           // when finally written, behind every item that began after it.
           const reservedHeldTurnItemIds = new Set<TurnItemId>();
@@ -1208,10 +1222,12 @@ export const layer: Layer.Layer<
             Stream.tap((event) =>
               Effect.gen(function* () {
                 let storedEventCount = 0;
-                const deliveredEvent = filterAssistantEvent(
+                const streamedEvent = filterAssistantEvent(
                   event,
                   DateTime.toEpochMillis(yield* DateTime.now),
                 );
+                const deliveredEvent =
+                  streamedEvent === null ? null : yield* gateAssistantReply(streamedEvent);
                 if (deliveredEvent) {
                   const rootTerminalAlreadySeen = yield* Ref.get(rootTerminalSeen);
                   const isRootProviderThreadUpdate =

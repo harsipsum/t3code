@@ -672,6 +672,7 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "orchestration_error",
       "thread_credential_required",
       "target_required",
+      "blocked_by_hook",
     ]),
     message: Schema.String,
   },

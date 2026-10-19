@@ -36,7 +36,7 @@ export class ThreadTitleRegenerationService extends Context.Service<
       | OrchestratorV2Error
       | ProjectStore.ProjectStoreV2Error
       | ServerSettingsError
-      | ThreadManagementService.ThreadManagementProviderInstanceDisabledError
+      | ThreadManagementService.ThreadManagementDispatchError
     >;
   }
 >()("t3/orchestration-v2/ThreadTitleRegenerationService") {}
