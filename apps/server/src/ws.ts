@@ -601,6 +601,25 @@ const MAX_CLIENT_APP_VERSION_LENGTH = 64;
 const MAX_CLIENT_BROWSER_LENGTH = 64;
 const MAX_CLIENT_DEVICE_MODEL_LENGTH = 80;
 
+export const requireAcpSessionResume = Effect.fn("ws.acpRegistry.requireSessionResume")(function* <
+  E,
+  R,
+>(
+  cached: { readonly canLoad?: boolean; readonly canResume?: boolean } | undefined,
+  live: Effect.Effect<{ readonly canLoad: boolean; readonly canResume: boolean }, E, R>,
+) {
+  if (cached?.canLoad === true || cached?.canResume === true) return;
+  // Discovery can lag a just-enabled connection. Its live initialize result
+  // is stronger evidence than a cached absence of native-session support.
+  const capabilities = yield* live;
+  if (!capabilities.canLoad && !capabilities.canResume) {
+    return yield* new AcpRegistryOperationError({
+      reason: "session_resume_unsupported",
+      message: "The ACP agent cannot load or resume native sessions.",
+    });
+  }
+});
+
 export function hasCompatibleOrchestrationProtocol(url: URL): boolean {
   return (
     url.searchParams.get(ORCHESTRATION_PROTOCOL_QUERY_PARAM) ===
@@ -1416,18 +1435,13 @@ const layerWsRpc = (
       ) {
         return yield* acpRegistryRuntimeCoordinator.withSessionMutation(
           Effect.gen(function* () {
-            yield* acpRegistryProject(input.projectId);
-            const { instance } = yield* acpSessionManager(input.instanceId);
+            const project = yield* acpRegistryProject(input.projectId);
+            const { instance, manager } = yield* acpSessionManager(input.instanceId);
             const providerSnapshot = yield* instance.snapshot.getSnapshot;
-            if (
-              providerSnapshot.nativeSessions?.canLoad !== true &&
-              providerSnapshot.nativeSessions?.canResume !== true
-            ) {
-              return yield* new AcpRegistryOperationError({
-                reason: "session_resume_unsupported",
-                message: "The ACP agent cannot load or resume native sessions.",
-              });
-            }
+            yield* requireAcpSessionResume(
+              providerSnapshot.nativeSessions,
+              manager.listSessions({ cwd: project.workspaceRoot }),
+            );
             const threadId = importedAcpThreadId({
               driver: instance.driverKind,
               instanceId: input.instanceId,

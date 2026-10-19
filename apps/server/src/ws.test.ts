@@ -36,12 +36,34 @@ import * as ProjectEnrichment from "./project/ProjectEnrichmentService.ts";
 import * as ProjectService from "./project/ProjectService.ts";
 import {
   hasCompatibleOrchestrationProtocol,
+  requireAcpSessionResume,
   resolveAvailableEditorsForConfig,
   shouldUseBoundedThreadSnapshot,
   subscribeOrchestrationV2Shell,
   subscribeOrchestrationV2Thread,
   withLateEditorConfig,
 } from "./ws.ts";
+
+it.effect(
+  "imports a just-enabled ACP connection using live support before cached discovery catches up",
+  () =>
+    Effect.gen(function* () {
+      let probes = 0;
+      const probe = Effect.sync(() => {
+        probes += 1;
+        return { canLoad: true, canResume: false };
+      });
+      yield* requireAcpSessionResume(undefined, probe);
+      yield* requireAcpSessionResume({ canLoad: false, canResume: false }, probe);
+      yield* requireAcpSessionResume({ canLoad: true }, probe);
+      assert.strictEqual(probes, 2);
+      const rejected = yield* requireAcpSessionResume(
+        undefined,
+        Effect.succeed({ canLoad: false, canResume: false }),
+      ).pipe(Effect.result);
+      assert.strictEqual(rejected._tag, "Failure");
+    }),
+);
 
 it("accepts only the current orchestration protocol before websocket RPC setup", () => {
   assert.isTrue(
