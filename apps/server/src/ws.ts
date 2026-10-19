@@ -748,6 +748,7 @@ export const subscribeOrchestrationV2Thread = Effect.fn("ws.orchestrationV2.subs
       "orchestration_v2.thread_id": input.threadId,
     });
     yield* threadManagement.ensureLegacyTranscript(input.threadId).pipe(
+      Effect.andThen(threadManagement.ensureThreadSession(input.threadId)),
       Effect.mapError(
         (cause) =>
           new OrchestrationV2GetThreadProjectionError({

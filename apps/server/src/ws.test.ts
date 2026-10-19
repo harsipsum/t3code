@@ -324,9 +324,14 @@ it.live.each(["thread", "shell"] as const)(
               requestCompletionMarker: true,
             }).pipe(Effect.flatMap(consume));
       });
+      let sessionEnsured = false;
       const items = yield* subscription.pipe(
         Effect.provideService(ThreadManagement.ThreadManagementService, {
           ensureLegacyTranscript: () => Effect.void,
+          ensureThreadSession: () =>
+            Effect.sync(() => {
+              sessionEnsured = true;
+            }),
           streamStoredEventsFrom: (
             input: Parameters<
               ThreadManagement.ThreadManagementService["Service"]["streamStoredEventsFrom"]
@@ -350,6 +355,7 @@ it.live.each(["thread", "shell"] as const)(
           subscribeChanges: PubSub.subscribe(updates),
         } as ProjectEnrichment.ProjectEnrichmentService["Service"]),
       );
+      assert.equal(sessionEnsured, scope === "thread");
       assert.deepEqual(
         items.map((item) => item.kind),
         scope === "thread"
@@ -429,6 +435,7 @@ it.effect("thread resume across compacted history keeps message order and final 
       ),
       Effect.provideService(ThreadManagement.ThreadManagementService, {
         ensureLegacyTranscript: () => Effect.void,
+        ensureThreadSession: () => Effect.void,
         streamStoredEventsFrom: () => Stream.never,
       } as unknown as ThreadManagement.ThreadManagementService["Service"]),
     );

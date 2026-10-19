@@ -343,6 +343,7 @@ export interface ThreadManagementServiceShape {
   ) => Effect.Effect<OrchestrationV2ThreadProjection, Orchestrator.OrchestratorV2Error>;
   readonly getCheckpointContext: Orchestrator.OrchestratorV2["Service"]["getCheckpointContext"];
   readonly getThreadSnapshot: Orchestrator.OrchestratorV2["Service"]["getThreadSnapshot"];
+  readonly ensureThreadSession: ThreadManagementServiceShape["ensureLegacyTranscript"];
   readonly getThreadTranscript: (
     threadId: ThreadId,
   ) => Effect.Effect<
@@ -1348,6 +1349,7 @@ const make = Effect.gen(function* () {
     getThreadProjection,
     getCheckpointContext,
     getThreadSnapshot,
+    ensureThreadSession: ensureNativeSession,
     getThreadTranscript,
     getThreadSnapshotWindow,
     getProjectThreadRecords,

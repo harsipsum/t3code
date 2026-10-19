@@ -172,6 +172,10 @@ it.effect(
         "Same answer",
       ]);
       live = false;
+      yield* service.ensureThreadSession(threadId);
+      yield* service.ensureThreadSession(threadId);
+      expect(opens).toBe(2);
+      live = false;
       messages = [
         makeMessage("replayed-user-one", "user"),
         makeMessage("replayed-agent-one", "assistant"),
@@ -179,7 +183,7 @@ it.effect(
         makeMessage("native-agent-two", "assistant"),
       ];
       yield* service.getThreadSnapshotWindow(threadId, { rowLimit: 50 });
-      expect(opens).toBe(2);
+      expect(opens).toBe(3);
       expect(projection.messages.map((message) => message.text)).toEqual([
         "Same question",
         "Same answer",
