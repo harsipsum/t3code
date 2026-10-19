@@ -257,12 +257,22 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     }),
   ),
   t3_queue_edit: writesThread((input) =>
-    dispatch(input.threadId, (common) => ({
-      ...common,
-      type: "queued-run.edit",
-      runId: input.queuedRunId,
-      text: input.text,
-    })),
+    Effect.gen(function* () {
+      const { threads, projection, caller } = yield* readThread(input.threadId);
+      const command = {
+        type: "queued-run.edit",
+        commandId: yield* newCommandId(),
+        threadId: projection.thread.id,
+        runId: input.queuedRunId,
+        text: input.text,
+      } as const;
+      // An edit swaps queued text the hook already allowed for text it has not seen.
+      yield* threads
+        .checkAgentDispatch({ command, senderThreadId: caller?.id })
+        .pipe(Effect.mapError(dispatchFailure));
+      const result = yield* threads.dispatch(command).pipe(Effect.mapError(dispatchFailure));
+      return { sequence: result.sequence };
+    }),
   ),
   t3_queue_cancel: writesThread((input) =>
     dispatch(input.threadId, (common) => ({

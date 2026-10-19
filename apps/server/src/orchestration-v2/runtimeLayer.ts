@@ -52,6 +52,7 @@ import * as ThreadLifecycleService from "./ThreadLifecycleService.ts";
 import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as CommandHooks from "../hooks/CommandHooks.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 
 export const layerEventInfrastructure = Layer.mergeAll(
@@ -150,6 +151,9 @@ const layerProviderAuthServiceProvided = ProviderAuthService.layer.pipe(
 const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      // Both consumers read it as optional so their tests need not provide it;
+      // production must, or configured hooks would silently never run.
+      CommandHooks.layer,
       McpAppModelContext.layer,
       layerCheckpointServiceProvided,
       layerEventSinkProvided,
@@ -250,6 +254,7 @@ const layerAgentSessionImporterProvided = AgentSessionImporter.layer.pipe(
 const layerThreadManagementProvided = ThreadManagementService.layerWithLegacyImporter.pipe(
   Layer.provide(
     Layer.mergeAll(
+      CommandHooks.layer,
       layerOrchestratorProvided,
       layerLegacyV1ThreadImporterProvided,
       layerCommandReceiptStoreProvided,

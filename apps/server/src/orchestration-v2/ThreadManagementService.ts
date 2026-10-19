@@ -56,6 +56,7 @@ import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimi
 import { projectTurnItemForDetail } from "./WireProjection.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as CommandHooks from "../hooks/CommandHooks.ts";
 
 export type ThreadManagementSendMode = "auto" | "queue" | "steer" | "restart";
 
@@ -63,6 +64,10 @@ export interface ThreadManagementProvenance {
   readonly createdBy: OrchestrationV2Actor;
   readonly creationSource: OrchestrationV2CreationSource;
 }
+
+/** An agent acting through T3 Code's MCP tools, as opposed to T3 Code acting for it. */
+export const isAgentToolAction = (provenance: ThreadManagementProvenance) =>
+  provenance.createdBy === "agent" && provenance.creationSource === "mcp";
 
 export function withCreationProvenance(
   command: OrchestrationV2Command,
@@ -305,8 +310,19 @@ export const ThreadManagementError = Schema.Union([
   ThreadManagementProjectThreadsListError,
   ThreadManagementDurableRunProjectionError,
   ThreadManagementProviderInstanceDisabledError,
+  CommandHooks.CommandHookBlockedError,
 ]);
 export type ThreadManagementError = typeof ThreadManagementError.Type;
+
+export type AgentDispatchHookCommand = Extract<
+  OrchestrationV2Command,
+  { readonly type: "message.dispatch" | "delegated_task.request" | "queued-run.edit" }
+>;
+
+export type ThreadManagementDispatchError =
+  | Orchestrator.OrchestratorV2Error
+  | ThreadManagementProviderInstanceDisabledError
+  | CommandHooks.CommandHookBlockedError;
 
 type ThreadManagementFailure = ThreadManagementError | Orchestrator.OrchestratorV2Error;
 
@@ -322,9 +338,24 @@ export interface ThreadManagementServiceShape {
   ) => Effect.Effect<void, LegacyV1ThreadImporter.LegacyV1ThreadImportError>;
   readonly dispatch: (
     command: OrchestrationV2ServerCommand,
-  ) => Effect.Effect<
-    Orchestrator.OrchestratorV2DispatchResult,
-    Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
+  ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, ThreadManagementDispatchError>;
+  /**
+   * Runs the configured agent dispatch hook for an action an agent takes
+   * through T3 Code's tools. `dispatch` runs it for messages and delegated
+   * tasks; a caller that creates the recipient thread first checks the message
+   * here before creating it, and the dispatch that follows reuses the verdict.
+   */
+  readonly checkAgentDispatch: (input: {
+    readonly command: AgentDispatchHookCommand;
+    readonly senderThreadId?: ThreadId | undefined;
+    readonly newThread?: {
+      readonly projectId: ProjectId;
+      readonly title: string;
+      readonly modelSelection: ModelSelection;
+    };
+  }) => Effect.Effect<
+    void,
+    Orchestrator.OrchestratorV2Error | CommandHooks.CommandHookBlockedError
   >;
   readonly getThreadHistoryPage: Orchestrator.OrchestratorV2["Service"]["getThreadHistoryPage"];
   readonly getTimelinePage: Orchestrator.OrchestratorV2["Service"]["getTimelinePage"];
@@ -412,7 +443,7 @@ export interface ThreadManagementServiceShape {
     readonly byOwnAgent: boolean;
   }) => Effect.Effect<
     { readonly sequence: number } | { readonly settlesWhenTurnEnds: true },
-    Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
+    ThreadManagementDispatchError
   >;
   readonly interruptThread: (
     input: ThreadManagementInterruptInput,
@@ -424,10 +455,7 @@ export interface ThreadManagementServiceShape {
     readonly threadId: ThreadId;
     readonly commandId: CommandId;
     readonly reason?: string | undefined;
-  }) => Effect.Effect<
-    void,
-    Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
-  >;
+  }) => Effect.Effect<void, ThreadManagementDispatchError>;
   readonly getThreadEventSequence: Orchestrator.OrchestratorV2["Service"]["getThreadEventSequence"];
   readonly recoverDelegatedTask: Orchestrator.OrchestratorV2["Service"]["recoverDelegatedTask"];
   readonly delegatedTaskResultPending: Orchestrator.OrchestratorV2["Service"]["delegatedTaskResultPending"];
@@ -669,9 +697,124 @@ const make = Effect.gen(function* () {
     }
   };
 
+  const commandHooks = yield* Effect.serviceOption(CommandHooks.CommandHooks);
+
+  const hookThread = (threadId: ThreadId) =>
+    orchestrator.getThreadRecords(threadId, []).pipe(
+      Effect.map(({ thread }): CommandHooks.HookThread => ({
+        threadId: thread.id,
+        projectId: thread.projectId,
+        title: thread.title,
+        providerInstanceId: thread.modelSelection.instanceId,
+        model: thread.modelSelection.model,
+      })),
+    );
+
+  const agentDispatchHookInput = (
+    input: Parameters<ThreadManagementServiceShape["checkAgentDispatch"]>[0],
+  ) =>
+    Effect.gen(function* () {
+      const { command } = input;
+      switch (command.type) {
+        case "message.dispatch": {
+          const sender =
+            command.senderThreadId === undefined ? null : yield* hookThread(command.senderThreadId);
+          if (input.newThread !== undefined) {
+            const recipient: CommandHooks.HookRecipient = {
+              kind: "new_thread",
+              threadId: command.threadId,
+              projectId: input.newThread.projectId,
+              title: input.newThread.title,
+              providerInstanceId: input.newThread.modelSelection.instanceId,
+              model: input.newThread.modelSelection.model,
+            };
+            return {
+              action: "thread_create",
+              text: command.text,
+              sender,
+              recipients: [recipient],
+              command,
+            } satisfies CommandHooks.AgentDispatchHookInput;
+          }
+          const target = yield* hookThread(command.threadId);
+          const selection = command.modelSelection;
+          const recipient: CommandHooks.HookRecipient = {
+            kind: "thread",
+            ...target,
+            ...(selection === undefined
+              ? {}
+              : { providerInstanceId: selection.instanceId, model: selection.model }),
+          };
+          return {
+            action: "thread_send",
+            text: command.text,
+            sender,
+            recipients: [recipient],
+            command,
+          } satisfies CommandHooks.AgentDispatchHookInput;
+        }
+        case "delegated_task.request": {
+          const parent = yield* hookThread(command.parentThreadId);
+          const recipient: CommandHooks.HookRecipient = {
+            kind: "delegated_task",
+            parentThreadId: command.parentThreadId,
+            projectId: parent.projectId,
+            title: command.title ?? null,
+            providerInstanceId: command.modelSelection.instanceId,
+            model: command.modelSelection.model,
+          };
+          return {
+            action: "delegate_task",
+            text: command.task,
+            sender: parent,
+            recipients: [recipient],
+            command,
+          } satisfies CommandHooks.AgentDispatchHookInput;
+        }
+        case "queued-run.edit": {
+          const sender =
+            input.senderThreadId === undefined ? null : yield* hookThread(input.senderThreadId);
+          const recipient: CommandHooks.HookRecipient = {
+            kind: "thread",
+            ...(yield* hookThread(command.threadId)),
+          };
+          return {
+            action: "queue_edit",
+            text: command.text,
+            sender,
+            recipients: [recipient],
+            command,
+          } satisfies CommandHooks.AgentDispatchHookInput;
+        }
+      }
+    });
+
+  // A replay of an accepted command only returns the recorded result, so its
+  // text is not sent again and the hook is not asked again.
+  const checkAgentDispatch: ThreadManagementServiceShape["checkAgentDispatch"] = (input) =>
+    Option.isNone(commandHooks)
+      ? Effect.void
+      : hasReceipt(input.command.commandId).pipe(
+          Effect.flatMap((accepted) =>
+            accepted
+              ? Effect.void
+              : commandHooks.value.checkAgentDispatch(
+                  input.command.commandId,
+                  agentDispatchHookInput(input),
+                ),
+          ),
+        );
+
+  const isAgentToolDispatch = (
+    command: OrchestrationV2ServerCommand,
+  ): command is Extract<AgentDispatchHookCommand, { readonly createdBy: unknown }> =>
+    (command.type === "message.dispatch" || command.type === "delegated_task.request") &&
+    isAgentToolAction(command);
+
   const dispatch: ThreadManagementServiceShape["dispatch"] = (command) =>
     ensureCommandTranscripts(command).pipe(
       Effect.andThen(assertDispatchTargetEnabled(command)),
+      Effect.andThen(isAgentToolDispatch(command) ? checkAgentDispatch({ command }) : Effect.void),
       Effect.andThen(orchestrator.dispatch(command)),
     );
 
@@ -1093,9 +1236,7 @@ const make = Effect.gen(function* () {
   const stopDelegatedTasks: ThreadManagementServiceShape["stopDelegatedTasks"] = (input) =>
     Effect.gen(function* () {
       const { subagents } = yield* orchestrator.getThreadRecords(input.threadId, ["subagents"]);
-      const failures: Array<
-        Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
-      > = [];
+      const failures: Array<ThreadManagementDispatchError> = [];
       for (const task of subagents) {
         if (task.origin !== "app_owned" || task.childThreadId === null) continue;
         const threadId = task.childThreadId;
@@ -1131,6 +1272,7 @@ const make = Effect.gen(function* () {
         Effect.andThen(orchestrator.searchThread(input)),
       ),
     dispatch,
+    checkAgentDispatch,
     getThreadHistoryPage: (threadId, cursor, throughEntryId, conversationOnly) =>
       ensureProjectionTranscript(threadId).pipe(
         Effect.andThen(

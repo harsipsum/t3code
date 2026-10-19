@@ -2,6 +2,8 @@ import { MessageId, ThreadId, OrchestratorMcpFailure, ProjectId } from "@t3tools
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as CommandHooks from "../../../hooks/CommandHooks.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
@@ -12,6 +14,8 @@ import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { newCommandId, readCaller, resolveProjectId, unavailable } from "../../threadAccess.ts";
 import { ProjectToolkit } from "./tools.ts";
+
+const isCommandHookBlocked = Schema.is(CommandHooks.CommandHookBlockedError);
 
 function projectFailure(error: Project.ProjectServiceError) {
   if (error._tag === "ProjectOperationError") return unavailable();
@@ -166,6 +170,12 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               return new OrchestratorMcpFailure({
                 code: "invalid_request",
                 message: error.message,
+              });
+            }
+            if (error._tag === "ThreadLaunchError" && isCommandHookBlocked(error.cause)) {
+              return new OrchestratorMcpFailure({
+                code: "blocked_by_hook",
+                message: error.cause.message,
               });
             }
             return unavailable();

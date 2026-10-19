@@ -11,6 +11,7 @@ import {
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 
+import type * as CommandHooks from "../hooks/CommandHooks.ts";
 import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as OrchestrationMcp from "./OrchestratorMcpService.ts";
@@ -23,19 +24,24 @@ export const unavailable = () =>
   });
 
 export const dispatchFailure = (
-  error: OrchestratorV2Error | ThreadManagement.ThreadManagementProviderInstanceDisabledError,
+  error:
+    | OrchestratorV2Error
+    | ThreadManagement.ThreadManagementProviderInstanceDisabledError
+    | CommandHooks.CommandHookBlockedError,
 ) =>
   error._tag === "ThreadManagementProviderInstanceDisabledError"
     ? new OrchestratorMcpFailure({ code: "invalid_request", message: error.message })
-    : (error._tag === "OrchestratorDispatchError" ||
-          error._tag === "OrchestratorCommandRejectedError") &&
-        typeof error.cause === "string" &&
-        error.cause.length > 0
-      ? new OrchestratorMcpFailure({
-          code: "orchestration_error",
-          message: Array.from(error.cause).slice(0, 1000).join(""),
-        })
-      : unavailable();
+    : error._tag === "CommandHookBlockedError"
+      ? new OrchestratorMcpFailure({ code: "blocked_by_hook", message: error.message })
+      : (error._tag === "OrchestratorDispatchError" ||
+            error._tag === "OrchestratorCommandRejectedError") &&
+          typeof error.cause === "string" &&
+          error.cause.length > 0
+        ? new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: Array.from(error.cause).slice(0, 1000).join(""),
+          })
+        : unavailable();
 
 export interface CallerLimits {
   readonly runtimeMode: RuntimeMode;
