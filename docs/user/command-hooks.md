@@ -24,10 +24,14 @@ change them, because a hook runs a command on the environment. Changes apply wit
 ```
 
 `timeoutMs` defaults to 10 seconds and can be up to 120 seconds. Set a hook to `null`, or remove
-it, to turn it off.
+it, to turn it off. If `settings.json` stops parsing, for example because `timeoutMs` is out of
+range, the server falls back to default settings and hooks are off until it parses again; the
+server log says so.
 
-T3 Code runs the command without a shell and writes one JSON object to its standard input. The
-exit code decides what happens:
+T3 Code writes one JSON object to the command's standard input. The command runs without a
+shell, except that Windows runs `.cmd` and `.bat` files through `cmd.exe`, and it inherits the
+server's environment variables and working directory. A hook may exit without reading its input.
+The exit code decides what happens:
 
 | Hook result                                                    | What happens                                                                             |
 | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
@@ -62,8 +66,10 @@ with the hook's reason.
 
 The input has `version`, `hook`, `action`, `commandId`, and `text`. It also has `sender` and
 `recipients`, the threads involved with their ids, project, title, and provider. `command` is
-the exact command T3 Code commits if the hook allows it. With several threads in one
-`create_threads` call, each one is checked just before it is created.
+the command T3 Code commits if the hook allows it; for a thread launched into a new Scratch
+folder, it has the requested workspace rather than the folder, which is only chosen after the
+check. With several threads in one `create_threads` call, each one is checked just before it is
+created. A blocked action that the agent retries is checked again.
 
 These are not checked:
 
@@ -71,9 +77,10 @@ These are not checked:
   delegated task results.
 - Anything an agent does outside T3 Code's tools: shell commands, its own MCP connectors and
   subagents, and, for [cloud threads](./cloud-threads.md), the provider's own tools.
-- Creating a scheduled task. Each time a scheduled task an agent created runs, its message is
-  checked.
-- Answers to another thread's questions and moving a queued message into the running turn.
+- Creating or editing a scheduled task. Each run of a task an agent created is checked, but a
+  task you created is not, even after an agent changes its prompt.
+- Answers to another thread's questions, moving a queued message into the running turn, and
+  forking or merging a thread back into another.
 
 ## Assistant reply hook
 

@@ -1,5 +1,6 @@
 import {
   type CommandHook,
+  type CommandHooks as CommandHooksSettings,
   type CommandId,
   type MessageId,
   OrchestrationV2Command,
@@ -34,7 +35,7 @@ export type HookRecipient =
   | ({ readonly kind: "thread" } & HookThread)
   /** A thread this same action creates, so it does not exist yet. */
   | ({ readonly kind: "new_thread" } & HookThread)
-  /** The child thread is created with the task; its id is not known before. */
+  /** The child thread is created together with the task. */
   | {
       readonly kind: "delegated_task";
       readonly parentThreadId: ThreadId;
@@ -56,7 +57,7 @@ export interface AgentDispatchHookInput {
 export interface AssistantReplyHookInput {
   readonly threadId: ThreadId;
   readonly projectId: ProjectId;
-  readonly runId: RunId;
+  readonly runId: RunId | null;
   readonly messageId: MessageId;
   readonly providerInstanceId: ProviderInstanceId;
   readonly model: string;
@@ -80,7 +81,7 @@ type Verdict =
   | { readonly _tag: "block"; readonly reason: string };
 
 const MAX_HOOK_OUTPUT_BYTES = 64 * 1024;
-const MAX_REMEMBERED_DISPATCHES = 512;
+const MAX_REMEMBERED_ALLOWS = 512;
 
 /**
  * Exit 2 blocks with the hook's own message. Anything else that is not a clean
@@ -111,13 +112,15 @@ const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 export interface CommandHooksShape {
   /**
-   * Runs the configured agent dispatch hook once per command id, so a check made
-   * before an action's first write covers the dispatch that follows it. The
-   * input is only built when a hook is configured.
+   * Runs the configured agent dispatch hook. An allowed command id and text is
+   * not asked again, so a check made before an action's first write covers the
+   * dispatch that follows it; a block is never remembered, so a retry asks
+   * again. The input is only built when a hook is configured, and None skips
+   * the check.
    */
   readonly checkAgentDispatch: <E>(
     commandId: CommandId,
-    input: Effect.Effect<AgentDispatchHookInput, E>,
+    input: Effect.Effect<Option.Option<AgentDispatchHookInput>, E>,
   ) => Effect.Effect<void, E | CommandHookBlockedError>;
   /** Some(reason) when the configured hook withholds the reply. */
   readonly checkAssistantReply: (
@@ -132,13 +135,25 @@ export class CommandHooks extends Context.Service<CommandHooks, CommandHooksShap
 export const make = Effect.fn("CommandHooks.make")(function* () {
   const processRunner = yield* ProcessRunner.ProcessRunner;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
-  const dispatchVerdicts = new Map<CommandId, Verdict>();
+  const allowedDispatches = new Set<string>();
+  // A failed settings read (say, of an unrelated secret) must not switch off a
+  // configured hook, so it falls back to the last configuration read.
+  let lastHooks: CommandHooksSettings = { agentDispatch: null, assistantReply: null };
 
   const configured = (name: "agentDispatch" | "assistantReply") =>
     serverSettings.getSettings.pipe(
-      Effect.map((settings) => Option.fromNullishOr(settings.hooks[name])),
-      Effect.orElseSucceed(() => Option.none<CommandHook>()),
+      Effect.map((settings) => {
+        lastHooks = settings.hooks;
+        return settings.hooks;
+      }),
+      Effect.catch((error) =>
+        Effect.logWarning("command-hook.settings-read-failed", { error }).pipe(
+          Effect.as(lastHooks),
+        ),
+      ),
+      Effect.map((hooks) => Option.fromNullishOr(hooks[name])),
     );
+  yield* configured("agentDispatch");
 
   const run = (name: "agentDispatch" | "assistantReply", hook: CommandHook, payload: object) =>
     processRunner
@@ -146,6 +161,7 @@ export const make = Effect.fn("CommandHooks.make")(function* () {
         command: hook.command,
         args: hook.args,
         stdin: encodeJson({ version: 1, hook: name, ...payload }),
+        allowUnreadStdin: true,
         timeout: Duration.millis(hook.timeoutMs),
         timeoutBehavior: "timedOutResult",
         maxOutputBytes: MAX_HOOK_OUTPUT_BYTES,
@@ -172,23 +188,24 @@ export const make = Effect.fn("CommandHooks.make")(function* () {
     Effect.gen(function* () {
       const hook = yield* configured("agentDispatch");
       if (Option.isNone(hook)) return;
-      let verdict = dispatchVerdicts.get(commandId);
-      if (verdict === undefined) {
-        const resolved = yield* input;
-        verdict = yield* run("agentDispatch", hook.value, {
-          ...resolved,
-          commandId,
-          command: encodeCommand(resolved.command),
-        });
-        if (dispatchVerdicts.size >= MAX_REMEMBERED_DISPATCHES) {
-          const oldest = dispatchVerdicts.keys().next().value;
-          if (oldest !== undefined) dispatchVerdicts.delete(oldest);
-        }
-        dispatchVerdicts.set(commandId, verdict);
-      }
+      const resolved = yield* input;
+      if (Option.isNone(resolved)) return;
+      // Keyed by the text too: a retry under the same id with other text is asked again.
+      const key = `${commandId}\u0000${resolved.value.text}`;
+      if (allowedDispatches.has(key)) return;
+      const verdict = yield* run("agentDispatch", hook.value, {
+        ...resolved.value,
+        commandId,
+        command: encodeCommand(resolved.value.command),
+      });
       if (verdict._tag === "block") {
         return yield* new CommandHookBlockedError({ reason: verdict.reason });
       }
+      if (allowedDispatches.size >= MAX_REMEMBERED_ALLOWS) {
+        const oldest = allowedDispatches.values().next().value;
+        if (oldest !== undefined) allowedDispatches.delete(oldest);
+      }
+      allowedDispatches.add(key);
     });
 
   const checkAssistantReply: CommandHooksShape["checkAssistantReply"] = (input) =>
@@ -211,6 +228,7 @@ function assistantReply(event: ReplyEvent) {
     return {
       messageId: event.message.id,
       threadId: event.message.threadId,
+      runId: event.message.runId,
       text: event.message.text,
       streaming: event.message.streaming,
     };
@@ -219,6 +237,7 @@ function assistantReply(event: ReplyEvent) {
     return {
       messageId: event.turnItem.messageId,
       threadId: event.turnItem.threadId,
+      runId: event.turnItem.runId,
       text: event.turnItem.text,
       streaming: event.turnItem.streaming,
     };
@@ -239,6 +258,7 @@ export function makeAssistantReplyGate(
   check: (reply: {
     readonly messageId: MessageId;
     readonly threadId: ThreadId;
+    readonly runId: RunId | null;
     readonly text: string;
     readonly alreadyVisible: boolean;
   }) => Effect.Effect<Option.Option<string>>,
@@ -259,6 +279,7 @@ export function makeAssistantReplyGate(
         reason = yield* check({
           messageId: reply.messageId,
           threadId: reply.threadId,
+          runId: reply.runId,
           text: reply.text,
           alreadyVisible: streamed.has(reply.messageId),
         });

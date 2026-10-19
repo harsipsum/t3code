@@ -40,6 +40,7 @@ const leadId = ThreadId.make("thread:hooks:lead");
 const workerId = ThreadId.make("thread:hooks:worker");
 const instanceId = ProviderInstanceId.make("codex");
 const runId = RunId.make("run:hooks:worker");
+const queuedRunId = RunId.make("run:hooks:queued");
 
 const projection = (threadId: ThreadId) =>
   ({
@@ -52,7 +53,19 @@ const projection = (threadId: ThreadId) =>
       modelSelection: { instanceId, model: "gpt-5-codex" },
     },
     // A running turn, so steer and restart have a target.
-    runs: [{ id: runId, status: "running", activeAttemptId: "attempt:hooks", ordinal: 1 }],
+    runs: [
+      { id: runId, status: "running", activeAttemptId: "attempt:hooks", ordinal: 1 },
+      {
+        id: queuedRunId,
+        status: "queued",
+        activeAttemptId: null,
+        ordinal: 2,
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-test",
+        },
+      },
+    ],
     providerTurns: [{ runAttemptId: "attempt:hooks", status: "running" }],
     messages: [],
     turnItems: [],
@@ -236,6 +249,37 @@ describe("agent dispatch hook at the thread management chokepoint", () => {
           }),
         );
         expect(dispatched).toEqual(["message.dispatch"]);
+      }),
+    ),
+  );
+
+  it.effect("checks a queued edit against the provider the run was queued for", () =>
+    withThreads(({ threads, payloads }) =>
+      Effect.gen(function* () {
+        yield* Effect.flip(
+          threads.checkAgentDispatch({
+            command: {
+              type: "queued-run.edit",
+              commandId: CommandId.make("command:hooks:edit"),
+              threadId: workerId,
+              runId: queuedRunId,
+              text: "Now include Acme",
+            },
+            senderThreadId: leadId,
+          }),
+        );
+        expect((yield* payloads)[0]).toMatchObject({
+          action: "queue_edit",
+          sender: { threadId: leadId },
+          recipients: [
+            {
+              kind: "thread",
+              threadId: workerId,
+              providerInstanceId: "claudeAgent",
+              model: "claude-test",
+            },
+          ],
+        });
       }),
     ),
   );

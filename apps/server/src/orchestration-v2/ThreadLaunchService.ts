@@ -884,26 +884,7 @@ const make = Effect.gen(function* () {
           yield* validateReusableThread(input, candidateThreadId);
         }
 
-        const workspaceStrategy: ThreadLaunchWorkspaceStrategy =
-          input.workspaceStrategy.type === "root" && Option.isNone(launchReceipt)
-            ? Option.match(
-                yield* managedFolders
-                  .folderForThread({
-                    projectId: input.projectId,
-                    threadId: candidateThreadId,
-                    text: input.initialMessage?.text ?? input.title,
-                  })
-                  .pipe(Effect.mapError(mapError(input, "provision-worktree", candidateThreadId))),
-                {
-                  onNone: () => input.workspaceStrategy,
-                  onSome: (worktreePath) => ({ type: "existing_worktree", worktreePath }),
-                },
-              )
-            : input.workspaceStrategy;
-        const initialBranch = workspaceStrategy.branch ?? null;
-        const initialWorktreePath =
-          workspaceStrategy.type === "existing_worktree" ? workspaceStrategy.worktreePath : null;
-        const initialMessage =
+        const initialMessageFields =
           input.initialMessage === undefined
             ? undefined
             : ({
@@ -926,15 +907,25 @@ const make = Effect.gen(function* () {
                 ...(input.initialMessage.context ? { context: input.initialMessage.context } : {}),
                 ...(input.generateTitle === true ? { titleSeed: input.title } : {}),
                 modelSelection: input.modelSelection,
-                dispatchMode: { type: "defer_start", workspaceStrategy },
                 createdBy: input.createdBy,
                 creationSource: input.creationSource,
-              } satisfies ThreadManagement.AgentDispatchHookCommand);
-        // Checked before the thread is claimed, so a blocked message leaves no empty thread.
-        if (initialMessage !== undefined && ThreadManagement.isAgentToolAction(input)) {
+              } as const);
+        const initialMessageFor = (
+          workspaceStrategy: ThreadLaunchWorkspaceStrategy,
+        ):
+          | Extract<ThreadManagement.AgentDispatchHookCommand, { type: "message.dispatch" }>
+          | undefined =>
+          initialMessageFields === undefined
+            ? undefined
+            : { ...initialMessageFields, dispatchMode: { type: "defer_start", workspaceStrategy } };
+        // Checked before the thread or its Scratch folder is claimed, so a blocked message
+        // leaves neither behind. The folder is not known yet, so the hook sees the requested
+        // workspace strategy rather than the resolved folder.
+        const requestedMessage = initialMessageFor(input.workspaceStrategy);
+        if (requestedMessage !== undefined && ThreadManagement.isAgentToolAction(input)) {
           yield* threads
             .checkAgentDispatch({
-              command: initialMessage,
+              command: requestedMessage,
               ...(input.reuseExistingThread === true
                 ? {}
                 : {
@@ -947,6 +938,26 @@ const make = Effect.gen(function* () {
             })
             .pipe(Effect.mapError(mapError(input, "dispatch-message", candidateThreadId)));
         }
+        const workspaceStrategy: ThreadLaunchWorkspaceStrategy =
+          input.workspaceStrategy.type === "root" && Option.isNone(launchReceipt)
+            ? Option.match(
+                yield* managedFolders
+                  .folderForThread({
+                    projectId: input.projectId,
+                    threadId: candidateThreadId,
+                    text: input.initialMessage?.text ?? input.title,
+                  })
+                  .pipe(Effect.mapError(mapError(input, "provision-worktree", candidateThreadId))),
+                {
+                  onNone: () => input.workspaceStrategy,
+                  onSome: (worktreePath) => ({ type: "existing_worktree", worktreePath }),
+                },
+              )
+            : input.workspaceStrategy;
+        const initialBranch = workspaceStrategy.branch ?? null;
+        const initialWorktreePath =
+          workspaceStrategy.type === "existing_worktree" ? workspaceStrategy.worktreePath : null;
+        const initialMessage = initialMessageFor(workspaceStrategy);
         const claimDispatch =
           input.reuseExistingThread === true
             ? threads.dispatch({

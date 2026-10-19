@@ -1207,7 +1207,6 @@ export const layer: Layer.Layer<
                 commandHooks.value.checkAssistantReply({
                   ...reply,
                   projectId: input.appThread.projectId,
-                  runId: input.run.id,
                   providerInstanceId: input.run.providerInstanceId,
                   model: input.modelSelection.model,
                   responseStreamingMode,

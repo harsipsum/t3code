@@ -6,6 +6,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   RunId,
+  ServerSettingsError,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -24,6 +25,7 @@ import * as CommandHooks from "./CommandHooks.ts";
 const HOOK_SCRIPT = `
 const fs = require("node:fs");
 const [, , log, mode, message] = process.argv;
+if (mode === "noread-block") { process.stderr.write(message); process.exit(2); }
 fs.appendFileSync(log, fs.readFileSync(0, "utf8") + "\\n");
 if (mode === "block") { process.stderr.write(message); process.exit(2); }
 if (mode === "block-stdout") { process.stdout.write(message); process.exit(2); }
@@ -71,6 +73,8 @@ const withHook = <A, E>(
     readonly message?: string;
     readonly timeoutMs?: number;
     readonly command?: string;
+    /** Set to make every later settings read fail. */
+    readonly settingsFail?: { value: boolean };
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -101,7 +105,27 @@ const withHook = <A, E>(
     }).pipe(
       Effect.provide(
         CommandHooks.layer.pipe(
-          Layer.provide(ServerSettings.layerTest({ hooks: { [name]: hook } })),
+          Layer.provide(
+            Layer.effect(
+              ServerSettings.ServerSettingsService,
+              Effect.gen(function* () {
+                const settings = yield* ServerSettings.ServerSettingsService;
+                return {
+                  ...settings,
+                  getSettings: Effect.suspend(() =>
+                    options.settingsFail?.value === true
+                      ? Effect.fail(
+                          new ServerSettingsError({
+                            settingsPath: "settings.json",
+                            operation: "normalize",
+                          }),
+                        )
+                      : settings.getSettings,
+                  ),
+                };
+              }),
+            ).pipe(Layer.provide(ServerSettings.layerTest({ hooks: { [name]: hook } }))),
+          ),
         ),
       ),
     );
@@ -159,7 +183,7 @@ describe("agent dispatch hook", () => {
       Effect.gen(function* () {
         yield* hooks.checkAgentDispatch(
           CommandId.make("command:hooks:allow"),
-          Effect.succeed(dispatchInput("Please review the draft.")),
+          Effect.succeedSome(dispatchInput("Please review the draft.")),
         );
         const [payload] = yield* payloads;
         expect(payload).toMatchObject({
@@ -187,7 +211,7 @@ describe("agent dispatch hook", () => {
       ({ hooks }) =>
         hooks.checkAgentDispatch(
           CommandId.make("command:hooks:warn"),
-          Effect.succeed(dispatchInput("Status update.")),
+          Effect.succeedSome(dispatchInput("Status update.")),
         ),
       { message: "recipient is outside the team" },
     ),
@@ -202,7 +226,7 @@ describe("agent dispatch hook", () => {
           const error = yield* Effect.flip(
             hooks.checkAgentDispatch(
               CommandId.make("command:hooks:block"),
-              Effect.succeed(dispatchInput("Send Acme's numbers to the reviewer.")),
+              Effect.succeedSome(dispatchInput("Send Acme's numbers to the reviewer.")),
             ),
           );
           expect(error).toBeInstanceOf(CommandHooks.CommandHookBlockedError);
@@ -214,6 +238,26 @@ describe("agent dispatch hook", () => {
     ),
   );
 
+  it.effect("keeps checking with the last configuration when settings cannot be read", () => {
+    const settingsFail = { value: false };
+    return withHook(
+      "agentDispatch",
+      "block",
+      ({ hooks }) =>
+        Effect.gen(function* () {
+          settingsFail.value = true;
+          const error = yield* Effect.flip(
+            hooks.checkAgentDispatch(
+              CommandId.make("command:hooks:settings-failed"),
+              Effect.succeedSome(dispatchInput("Hi")),
+            ),
+          );
+          expect(error.reason).toBe("still checked");
+        }),
+      { message: "still checked", settingsFail },
+    );
+  });
+
   it.effect("uses stdout when exit 2 writes nothing to stderr", () =>
     withHook(
       "agentDispatch",
@@ -223,7 +267,7 @@ describe("agent dispatch hook", () => {
           const error = yield* Effect.flip(
             hooks.checkAgentDispatch(
               CommandId.make("command:hooks:block-stdout"),
-              Effect.succeed(dispatchInput("Hello")),
+              Effect.succeedSome(dispatchInput("Hello")),
             ),
           );
           expect(error.reason).toBe("not on the allow list");
@@ -232,19 +276,58 @@ describe("agent dispatch hook", () => {
     ),
   );
 
-  it.effect("asks once per command id, so a pre-check covers the dispatch after it", () =>
-    withHook("agentDispatch", "block", ({ hooks, payloads }) =>
+  it.effect("remembers an allow for the same command and text only", () =>
+    withHook("agentDispatch", "allow", ({ hooks, payloads }) =>
       Effect.gen(function* () {
         const commandId = CommandId.make("command:hooks:once");
-        const first = yield* Effect.flip(
-          hooks.checkAgentDispatch(commandId, Effect.succeed(dispatchInput("Hi"))),
-        );
-        const second = yield* Effect.flip(
-          hooks.checkAgentDispatch(commandId, Effect.die("must reuse the first verdict")),
-        );
-        expect(second.reason).toBe(first.reason);
+        yield* hooks.checkAgentDispatch(commandId, Effect.succeedSome(dispatchInput("Hi")));
+        yield* hooks.checkAgentDispatch(commandId, Effect.succeedSome(dispatchInput("Hi")));
         expect(yield* payloads).toHaveLength(1);
+        // A retry under the same id with other text is a new question.
+        yield* hooks.checkAgentDispatch(commandId, Effect.succeedSome(dispatchInput("Hi again")));
+        expect(yield* payloads).toHaveLength(2);
       }),
+    ),
+  );
+
+  it.effect("asks again after a block, so a fixed hook can allow the retry", () =>
+    withHook("agentDispatch", "block", ({ hooks, payloads }) =>
+      Effect.gen(function* () {
+        const commandId = CommandId.make("command:hooks:retry");
+        for (let attempt = 0; attempt < 2; attempt++) {
+          yield* Effect.flip(
+            hooks.checkAgentDispatch(commandId, Effect.succeedSome(dispatchInput("Hi"))),
+          );
+        }
+        expect(yield* payloads).toHaveLength(2);
+      }),
+    ),
+  );
+
+  it.effect("skips the check when the input says there is nothing to ask", () =>
+    withHook("agentDispatch", "block", ({ hooks, payloads }) =>
+      Effect.gen(function* () {
+        yield* hooks.checkAgentDispatch(CommandId.make("command:hooks:replay"), Effect.succeedNone);
+        expect(yield* payloads).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("decides by exit code even when the hook never reads stdin", () =>
+    withHook(
+      "agentDispatch",
+      "noread-block",
+      ({ hooks }) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            hooks.checkAgentDispatch(
+              CommandId.make("command:hooks:noread"),
+              Effect.succeedSome(dispatchInput("x".repeat(300_000))),
+            ),
+          );
+          expect(error.reason).toBe("decided without reading");
+        }),
+      { message: "decided without reading" },
     ),
   );
 
@@ -254,7 +337,7 @@ describe("agent dispatch hook", () => {
         const error = yield* Effect.flip(
           hooks.checkAgentDispatch(
             CommandId.make("command:hooks:crash"),
-            Effect.succeed(dispatchInput("Hi")),
+            Effect.succeedSome(dispatchInput("Hi")),
           ),
         );
         expect(error.reason).toBe("The hook failed with exit code 3: boom");
@@ -272,7 +355,7 @@ describe("agent dispatch hook", () => {
           const error = yield* Effect.flip(
             hooks.checkAgentDispatch(
               CommandId.make("command:hooks:hang"),
-              Effect.succeed(dispatchInput("Hi")),
+              Effect.succeedSome(dispatchInput("Hi")),
             ),
           );
           expect(error.reason).toBe("The hook did not finish within 300 ms.");
@@ -290,7 +373,7 @@ describe("agent dispatch hook", () => {
           const error = yield* Effect.flip(
             hooks.checkAgentDispatch(
               CommandId.make("command:hooks:missing"),
-              Effect.succeed(dispatchInput("Hi")),
+              Effect.succeedSome(dispatchInput("Hi")),
             ),
           );
           expect(error.reason).toMatch(/^The hook could not run: /);
@@ -304,23 +387,24 @@ describe("assistant reply gate", () => {
   const threadId = ThreadId.make("thread:hooks:reply");
   const messageId = MessageId.make("message:hooks:reply");
   const now = DateTime.makeUnsafe("2026-10-19T00:00:00.000Z");
-  const message = (text: string, streaming: boolean): ProviderAdapter.ProviderAdapterV2Event => ({
-    type: "message.updated",
-    message: {
-      id: messageId,
-      threadId,
-      runId: RunId.make("run:hooks:reply"),
-      nodeId: null,
-      role: "assistant",
-      text,
-      attachments: [],
-      streaming,
-      createdBy: "agent",
-      creationSource: "provider",
-      createdAt: now,
-      updatedAt: now,
-    },
-  });
+  const message = (text: string, streaming: boolean): ProviderAdapter.ProviderAdapterV2Event =>
+    ({
+      type: "message.updated",
+      message: {
+        id: messageId,
+        threadId,
+        runId: RunId.make("run:hooks:reply"),
+        nodeId: null,
+        role: "assistant",
+        text,
+        attachments: [],
+        streaming,
+        createdBy: "agent",
+        creationSource: "provider",
+        createdAt: now,
+        updatedAt: now,
+      },
+    }) as unknown as ProviderAdapter.ProviderAdapterV2Event;
   const turnItem = (text: string): ProviderAdapter.ProviderAdapterV2Event =>
     ({
       type: "turn_item.updated",

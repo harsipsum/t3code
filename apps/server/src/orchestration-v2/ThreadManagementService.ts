@@ -774,9 +774,16 @@ const make = Effect.gen(function* () {
         case "queued-run.edit": {
           const sender =
             input.senderThreadId === undefined ? null : yield* hookThread(input.senderThreadId);
+          // A queued run keeps the provider it was queued for, which can differ
+          // from the thread's current one.
+          const { runs } = yield* orchestrator.getThreadRecords(command.threadId, ["runs"]);
+          const selection = runs.find((run) => run.id === command.runId)?.modelSelection;
           const recipient: CommandHooks.HookRecipient = {
             kind: "thread",
             ...(yield* hookThread(command.threadId)),
+            ...(selection === undefined
+              ? {}
+              : { providerInstanceId: selection.instanceId, model: selection.model }),
           };
           return {
             action: "queue_edit",
@@ -794,14 +801,12 @@ const make = Effect.gen(function* () {
   const checkAgentDispatch: ThreadManagementServiceShape["checkAgentDispatch"] = (input) =>
     Option.isNone(commandHooks)
       ? Effect.void
-      : hasReceipt(input.command.commandId).pipe(
-          Effect.flatMap((accepted) =>
-            accepted
-              ? Effect.void
-              : commandHooks.value.checkAgentDispatch(
-                  input.command.commandId,
-                  agentDispatchHookInput(input),
-                ),
+      : commandHooks.value.checkAgentDispatch(
+          input.command.commandId,
+          hasReceipt(input.command.commandId).pipe(
+            Effect.flatMap((accepted) =>
+              accepted ? Effect.succeedNone : Effect.asSome(agentDispatchHookInput(input)),
+            ),
           ),
         );
 

@@ -129,11 +129,13 @@ const normalizeServerSettings = (
   );
 
 export function redactServerSettingsForClient(settings: ServerSettings): ServerSettings {
-  return mapSettingsSecrets(settings, (secret) =>
+  const redacted = mapSettingsSecrets(settings, (secret) =>
     secret.sensitive
       ? { value: "", redacted: secret.redacted || secret.value.length > 0 }
       : { value: secret.value, redacted: false },
   );
+  // Hook arguments may carry credentials, and no client reads or writes hooks.
+  return { ...redacted, hooks: { agentDispatch: null, assistantReply: null } };
 }
 
 export function applyProviderInstanceMutation(
