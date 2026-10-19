@@ -15,6 +15,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   CheckpointId,
   EnvironmentId,
+  EventId,
   MessageId,
   type ModelSelection,
   NodeId,
@@ -56,6 +57,8 @@ import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
 import type * as EffectAcpSchema from "effect-acp/compat";
 
+import * as ProjectionStore from "../ProjectionStore.ts";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
@@ -112,6 +115,7 @@ const layerTest = Layer.mergeAll(
 );
 const ACP_TEST_DRIVER = ProviderDriverKind.make("acp-test");
 const decodeUnknownJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+const encodeSyncHistoryJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 describe("acpProjectedCommandExitCode", () => {
   const successOutput = { type: "Bash", exit_code: 0 };
@@ -374,6 +378,8 @@ const waitForPublishedProcessIds = (
 function makeMockRuntime(input: {
   readonly childProcessSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
   readonly mockAgentPath: string;
+  readonly mockAgentArgs?: ReadonlyArray<string>;
+  readonly replaySessionHistory?: boolean;
   readonly environment?:
     | Readonly<Record<string, string>>
     | ((runtimeOrdinal: number) => Readonly<Record<string, string>>);
@@ -416,6 +422,7 @@ function makeMockRuntime(input: {
       const context = yield* Layer.build(
         AcpSessionRuntime.layer({
           ...runtimeInput,
+          ...(input.replaySessionHistory ? { replaySessionHistory: true } : {}),
           ...(input.cancelBehavior === undefined ? {} : { cancelBehavior: input.cancelBehavior }),
           ...(input.ownDetachedProcessGroup === undefined
             ? {}
@@ -441,7 +448,7 @@ function makeMockRuntime(input: {
           protocolLogging,
           spawn: {
             command: process.execPath,
-            args: [input.mockAgentPath],
+            args: [input.mockAgentPath, ...(input.mockAgentArgs ?? [])],
             cwd: runtimeInput.cwd,
             env: {
               T3_ACP_SESSION_LIFECYCLE: "1",
@@ -14265,3 +14272,299 @@ describe("acpPostSettleMonitorPromptShouldSuppress", () => {
     );
   });
 });
+
+it.live("syncs external ACP exchanges, deduplicates echoes, and reloads missed history", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const selfInvocation = yield* resolveSelfInvocation();
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "acp-sync-" });
+    const historyFile = path.join(directory, "history.json");
+    const triggerFile = path.join(directory, "trigger.txt");
+    const mockAgentPath = yield* path.fromFileUrl(
+      new URL("../../provider/testFixtures/conversation-sync-mock-agent.mjs", import.meta.url),
+    );
+    const requests =
+      yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+    const instanceId = ProviderInstanceId.make("sync-test");
+    const adapter = yield* makeAcpAdapterV2({
+      instanceId,
+      selfInvocation,
+      continuationRequests: {
+        offer: (request) => Queue.offer(requests, request).pipe(Effect.asVoid),
+      },
+      flavor: {
+        driver: ACP_TEST_DRIVER,
+        capabilities: AcpProviderCapabilitiesV2,
+        syncExternalMessages: true,
+        displayName: "Connector",
+        makeRuntime: makeMockRuntime({
+          childProcessSpawner,
+          mockAgentPath,
+          mockAgentArgs: ["--history-file", historyFile, "--trigger-file", triggerFile],
+          replaySessionHistory: true,
+        }),
+      },
+    });
+    const threadId = ThreadId.make("sync-thread");
+    const providerSessionId = ProviderSessionId.make("sync-session");
+    const modelSelection = { instanceId, model: "default" };
+    const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      cwd: directory,
+    });
+    const firstSessionScope = yield* Scope.make();
+    yield* Effect.addFinalizer(() => Scope.close(firstSessionScope, Exit.void));
+    const runtime = yield* adapter
+      .openSession({ threadId, providerSessionId, modelSelection, runtimePolicy })
+      .pipe(Scope.provide(firstSessionScope));
+    const providerThread = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
+    assert.equal(providerThread.agentComputer?.state, "live");
+    const now = yield* DateTime.now;
+    const first = makeTurnInput({ threadId, providerThread, instanceId, runtimePolicy, now });
+    let sequence = 0;
+    yield* store.apply({
+      id: EventId.make(`sync-event-${sequence++}`),
+      type: "thread.created",
+      threadId,
+      providerInstanceId: instanceId,
+      occurredAt: now,
+      payload: first.appThread,
+    });
+    const apply = (event: ProviderAdapter.ProviderAdapterV2Event) =>
+      Effect.gen(function* () {
+        const base = {
+          id: EventId.make(`sync-event-${sequence++}`),
+          threadId,
+          providerInstanceId: instanceId,
+          occurredAt: yield* DateTime.now,
+        };
+        if (event.type === "message.updated")
+          yield* store.apply({ ...base, type: "message.updated", payload: event.message });
+        if (event.type === "provider_thread.updated")
+          yield* store.apply({
+            ...base,
+            type: "provider-thread.updated",
+            payload: event.providerThread,
+          });
+        if (event.type === "turn_item.updated")
+          yield* store.apply({ ...base, type: "turn-item.updated", payload: event.turnItem });
+      });
+    const terminal = runtime.events.pipe(
+      Stream.tap(apply),
+      Stream.takeUntil((event) => event.type === "turn.terminal"),
+      Stream.runCollect,
+    );
+    // No T3 prompt has run: the connector itself starts this exchange.
+    yield* fs.writeFileString(triggerFile, "one");
+    const request = yield* Queue.take(requests);
+    assert.equal(request.detail, "External ");
+    assert.deepEqual(request.origin, {
+      label: "Typed in connector app",
+      url: "https://example.com/conversation",
+    });
+    const external = {
+      ...first,
+      message: {
+        ...first.message,
+        messageId: request.messageId!,
+        text: request.detail!,
+        origin: request.origin,
+        creationSource: "provider" as const,
+      },
+    };
+    yield* store.apply({
+      id: EventId.make(`sync-event-${sequence++}`),
+      type: "message.updated",
+      threadId,
+      providerInstanceId: instanceId,
+      occurredAt: now,
+      payload: {
+        id: external.message.messageId,
+        threadId,
+        runId: first.runId,
+        nodeId: first.rootNodeId,
+        createdBy: "user",
+        creationSource: "provider",
+        role: "user",
+        text: request.detail!,
+        origin: request.origin,
+        attachments: [],
+        streaming: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    yield* runtime.startTurn(external);
+    const events = Array.from(yield* terminal);
+    assert.isTrue(
+      events.some(
+        (event) =>
+          event.type === "message.updated" &&
+          event.message.text === "External answer one" &&
+          event.message.streaming,
+      ),
+    );
+    assert.isTrue(
+      events.some(
+        (event) =>
+          event.type === "provider_thread.updated" && event.providerThread.status === "active",
+      ),
+    );
+    assert.isTrue(
+      events.some(
+        (event) =>
+          event.type === "provider_thread.updated" && event.providerThread.status === "idle",
+      ),
+    );
+    const records = yield* store.getThreadRecords(threadId, ["messages", "providerThreads"]);
+    assert.deepEqual(records.messages.map((message) => message.text).sort(), [
+      "External answer one",
+      "External question one",
+    ]);
+    assert.equal(
+      records.messages.find((message) => message.role === "user")?.origin?.label,
+      "Typed in connector app",
+    );
+    assert.equal(records.thread.agentComputer?.state, "live");
+    yield* fs.writeFileString(triggerFile, "repeat-two");
+    const repeatRequest = yield* Queue.take(requests);
+    const repeated = makeTurnInput({
+      threadId,
+      providerThread,
+      instanceId,
+      runtimePolicy,
+      now,
+      ordinal: 2,
+    });
+    yield* runtime.startTurn({
+      ...repeated,
+      message: {
+        ...repeated.message,
+        messageId: repeatRequest.messageId!,
+        text: repeatRequest.detail!,
+        origin: repeatRequest.origin,
+        creationSource: "provider",
+      },
+    });
+    yield* terminal;
+    const repeatedRecords = yield* store.getThreadRecords(threadId, ["messages"]);
+    assert.deepEqual(
+      repeatedRecords.messages.map((message) => message.text),
+      [
+        "External question one",
+        "External answer one",
+        "External question one",
+        "External answer one",
+      ],
+    );
+    assert.equal(
+      new Set(repeatedRecords.messages.map((message) => message.id)).size,
+      4,
+      "intentional repeat messages have distinct stable IDs",
+    );
+    const second = makeTurnInput({
+      threadId,
+      providerThread,
+      instanceId,
+      runtimePolicy,
+      now,
+      ordinal: 3,
+      messageText: "Typed in T3",
+    });
+    yield* runtime.startTurn(second);
+    yield* terminal;
+    // Trigger echoes after T3's turn has ended. Each computer update follows its echo.
+    for (const trigger of ["echo", "echo-no-id:Typed in T3"]) {
+      yield* fs.writeFileString(triggerFile, trigger);
+      yield* runtime.events.pipe(
+        Stream.tap(apply),
+        Stream.filter(
+          (event) =>
+            event.type === "provider_thread.updated" &&
+            event.providerThread.agentComputer?.title === trigger,
+        ),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+      assert.isTrue(
+        Option.isNone(yield* Queue.poll(requests)),
+        "echo must not enqueue another run",
+      );
+    }
+    assert.equal(
+      (yield* store.getThreadRecords(threadId, [])).thread.agentComputer?.title,
+      "echo-no-id:Typed in T3",
+    );
+    const before = yield* runtime.readThreadSnapshot({ providerThread });
+    assert.equal(before.messages.filter((message) => message.text === "Typed in T3").length, 1);
+    const decodeHistory = Schema.decodeUnknownEffect(
+      Schema.fromJsonString(Schema.Array(Schema.Unknown)),
+    );
+    const history = yield* decodeHistory(yield* fs.readFileString(historyFile));
+    const missed = [
+      {
+        sessionUpdate: "user_message_chunk",
+        content: { type: "text", text: "Missed question" },
+        _meta: { "t3/messageId": "missed-user" },
+      },
+      {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "Missed answer" },
+        _meta: { "t3/messageId": "missed-agent" },
+      },
+    ];
+    yield* Scope.close(firstSessionScope, Exit.void);
+    yield* fs.writeFileString(historyFile, yield* encodeSyncHistoryJson([...history, ...missed]));
+    const reopened = yield* adapter.openSession({
+      threadId,
+      providerSessionId,
+      modelSelection,
+      runtimePolicy,
+      initialNativeThreadId: "conversation-sync-session",
+      initialProviderItemIdentityVersion: 2,
+    });
+    const resumedThread = yield* reopened.ensureThread({ threadId, modelSelection, runtimePolicy });
+    const caughtUp = yield* reopened.readThreadSnapshot({ providerThread: resumedThread });
+    const again = yield* reopened.readThreadSnapshot({ providerThread: resumedThread });
+    assert.deepEqual(
+      caughtUp.messages.map((message) => [message.id, message.text]),
+      again.messages.map((message) => [message.id, message.text]),
+    );
+    assert.equal(
+      caughtUp.messages.filter((message) => message.text === "External answer one").length,
+      2,
+    );
+    assert.equal(
+      caughtUp.messages.filter((message) => message.text === "Missed question").length,
+      1,
+    );
+    assert.equal(
+      caughtUp.messages.find((message) => message.text === "Missed question")?.origin?.label,
+      "From Connector app",
+    );
+    const originalAnswer = records.messages.find(
+      (message) => message.text === "External answer one",
+    )!;
+    assert.equal(
+      caughtUp.messages.find((message) => message.text === "External answer one")?.id,
+      originalAnswer.id,
+    );
+    assert.isTrue(
+      Option.isNone(yield* Queue.poll(requests)),
+      "history replay must not start turns",
+    );
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        layerTest,
+        ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
+      ),
+    ),
+    Effect.timeout("25 seconds"),
+    Effect.scoped,
+  ),
+);

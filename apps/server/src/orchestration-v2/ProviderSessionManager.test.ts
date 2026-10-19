@@ -332,6 +332,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
     readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
     readonly backgroundTasksEndWithProcess?: boolean;
+    readonly receivesExternalMessages?: boolean;
     readonly hangSessionScopeClose?: boolean;
     readonly startTurn?: Effect.Effect<void>;
     readonly beforeUnload?: Effect.Effect<void>;
@@ -403,6 +404,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
           driver: CODEX_DRIVER,
           providerSessionId: input.providerSessionId,
           providerSession: session,
+          ...(options.receivesExternalMessages ? { receivesExternalMessages: true } : {}),
           events: options.failEventStream
             ? Stream.fail(
                 new ProviderAdapter.ProviderAdapterEventStreamError({
@@ -481,6 +483,7 @@ function layerTest(input: {
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
   readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
   readonly backgroundTasksEndWithProcess?: boolean;
+  readonly receivesExternalMessages?: boolean;
   readonly hangSessionScopeClose?: boolean;
   readonly startTurn?: Effect.Effect<void>;
   readonly beforeUnload?: Effect.Effect<void>;
@@ -501,6 +504,7 @@ function layerTest(input: {
             : layerTestEventSink;
   const layerRegistry = Layer.unwrap(
     makeProviderAdapter(input.state, {
+      ...(input.receivesExternalMessages ? { receivesExternalMessages: true } : {}),
       failEventStream: input.failEventStream ?? false,
       ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
       ...(input.mcpConfigs === undefined ? {} : { mcpConfigs: input.mcpConfigs }),
@@ -2641,6 +2645,78 @@ it.effect("ProviderSessionManagerV2 terminal detach revokes the thread's MCP cre
 
     yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 1_000, mcpConfigs })));
   }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 keeps external conversations connected and persists idle computer updates",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("external-conversation-idle");
+        const created = yield* makeThreadCreatedEvent({ idAllocator, threadId, now });
+        yield* eventSink.write({ events: [created] });
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const providerThread = makeProviderThread({
+          idAllocator,
+          providerSessionId,
+          threadId,
+          now,
+          nativeThreadId: "native-thread",
+        });
+        const subscription = yield* runtime.subscribeEvents!;
+        const queue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId))!;
+        yield* Queue.offer(queue, {
+          type: "provider_thread.updated",
+          driver: CODEX_DRIVER,
+          providerThread: {
+            ...providerThread,
+            agentComputer: { url: "https://example.com/computer", state: "live" },
+          },
+        });
+        // A later session event is an ordered barrier after the computer update commits.
+        yield* Queue.offer(queue, {
+          type: "provider_session.updated",
+          driver: CODEX_DRIVER,
+          providerSession: { ...runtime.providerSession, model: "computer-update-committed" },
+        });
+        yield* subscription.events.pipe(
+          Stream.filter((event) => event.type === "provider_session.updated"),
+          Stream.take(1),
+          Stream.runDrain,
+        );
+        assert.equal(
+          (yield* store.getThreadRecords(threadId, [])).thread.agentComputer?.state,
+          "live",
+        );
+        yield* TestClock.adjust("1 hour");
+        assert.isTrue(Option.isSome(yield* manager.get(providerSessionId)));
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 1000,
+            maxIdlePinMs: 2000,
+            receivesExternalMessages: true,
+          }),
+        ),
+      );
+    }),
 );
 
 it.effect("ProviderSessionManagerV2 releases idle sessions without sweeping all sessions", () =>

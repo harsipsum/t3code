@@ -4,6 +4,7 @@ import {
   MessageId,
   NodeId,
   type OrchestrationV2Command,
+  type OrchestrationV2ConversationMessage,
   type OrchestrationV2Run,
   type OrchestrationV2Subagent,
   type OrchestrationV2ProviderThread,
@@ -40,6 +41,138 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import { DispatchModeLimit, type DispatchModeRefusal } from "./DispatchModeLimit.ts";
+import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
+
+it.effect(
+  "opens native ACP sessions from the thread window and catches up once per connection",
+  () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("native-sync-window");
+      const instanceId = ProviderInstanceId.make("codex");
+      const providerThread = {
+        id: ProviderThreadId.make("native-sync-provider-thread"),
+        driver: "acpRegistry",
+        nativeThreadRef: { nativeId: "native-conversation" },
+        providerSessionId: null,
+      } as unknown as OrchestrationV2ProviderThread;
+      const persistedMessages: OrchestrationV2ConversationMessage[] = [];
+      const projection = {
+        thread: {
+          id: threadId,
+          projectId: ProjectId.make("native-sync-project"),
+          providerInstanceId: instanceId,
+          modelSelection: { instanceId, model: "default" },
+          activeProviderThreadId: providerThread.id,
+          archivedAt: null,
+          deletedAt: null,
+        },
+        providerThreads: [providerThread],
+        messages: persistedMessages,
+        runs: [],
+        turnItems: [],
+      } as unknown as OrchestrationV2ThreadProjection;
+      const makeMessage = (id: string, role: "user" | "assistant") => ({
+        id: MessageId.make(id),
+        threadId,
+        runId: null,
+        nodeId: null,
+        createdBy: "user" as const,
+        creationSource: "provider" as const,
+        role,
+        text: role === "user" ? "Same question" : "Same answer",
+        attachments: [],
+        streaming: false,
+        createdAt: now,
+        updatedAt: now,
+      });
+      let messages = [
+        makeMessage("native-user-one", "user"),
+        makeMessage("native-agent-one", "assistant"),
+      ];
+      let live = false;
+      let opens = 0;
+      const ingested: ProviderAdapter.ProviderAdapterV2Event[] = [];
+      const layerTest = ThreadManagementService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            layerReceiptsTest,
+            ServerSettings.layerTest(),
+            Layer.mock(Orchestrator.OrchestratorV2)({
+              getThreadRecords: () => Effect.succeed(projection as never),
+              getThreadSnapshotWindow: () => Effect.succeed({} as never),
+            }),
+            Layer.mock(RuntimePolicy.RuntimePolicyV2)({
+              resolve: () =>
+                Effect.succeed({
+                  runtimeMode: "full-access",
+                  interactionMode: "default",
+                  cwd: null,
+                }),
+            }),
+            Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+              isLive: () => Effect.sync(() => live),
+              open: () =>
+                Effect.sync(() => {
+                  opens++;
+                  live = true;
+                  return {
+                    driver: ProviderDriverKind.make("acpRegistry"),
+                    ensureThread: () => Effect.succeed(providerThread),
+                    readThreadSnapshot: () =>
+                      Effect.succeed({
+                        providerThread,
+                        messages,
+                        unidentifiedMessageIds: messages
+                          .filter((message) => String(message.id).startsWith("replayed-"))
+                          .map((message) => message.id),
+                        providerTurns: [],
+                        runtimeRequests: [],
+                      }),
+                  } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime;
+                }),
+            }),
+            Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+              ingestNormalized: (input) =>
+                Effect.sync(() => {
+                  ingested.push(input.event);
+                  if (input.event.type === "message.updated")
+                    persistedMessages.push(input.event.message);
+                  return [] as never;
+                }),
+            }),
+          ),
+        ),
+      );
+      const service = yield* ThreadManagementService.ThreadManagementService.pipe(
+        Effect.provide(layerTest),
+      );
+      yield* service.getThreadSnapshotWindow(threadId, { rowLimit: 50 });
+      yield* service.getThreadSnapshotWindow(threadId, { rowLimit: 50 });
+      expect(opens).toBe(1);
+      expect(projection.messages.map((message) => message.text)).toEqual([
+        "Same question",
+        "Same answer",
+      ]);
+      live = false;
+      messages = [
+        makeMessage("replayed-user-one", "user"),
+        makeMessage("replayed-agent-one", "assistant"),
+        makeMessage("native-user-two", "user"),
+        makeMessage("native-agent-two", "assistant"),
+      ];
+      yield* service.getThreadSnapshotWindow(threadId, { rowLimit: 50 });
+      expect(opens).toBe(2);
+      expect(projection.messages.map((message) => message.text)).toEqual([
+        "Same question",
+        "Same answer",
+        "Same question",
+        "Same answer",
+      ]);
+      expect(ingested.filter((event) => event.type === "turn_item.updated")).toHaveLength(4);
+    }),
+);
 
 it("stamps authoritative provenance on commands that create threads or messages", () => {
   const command: OrchestrationV2Command = {
