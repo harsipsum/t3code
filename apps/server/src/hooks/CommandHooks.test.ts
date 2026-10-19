@@ -258,6 +258,25 @@ describe("agent dispatch hook", () => {
     );
   });
 
+  it.effect("blocks while no settings read has worked yet", () =>
+    withHook(
+      "agentDispatch",
+      "allow",
+      ({ hooks, payloads }) =>
+        Effect.gen(function* () {
+          const error = yield* Effect.flip(
+            hooks.checkAgentDispatch(
+              CommandId.make("command:hooks:settings-unknown"),
+              Effect.succeedSome(dispatchInput("Hi")),
+            ),
+          );
+          expect(error.reason).toBe("T3 Code could not read its hook settings.");
+          expect(yield* payloads).toEqual([]);
+        }),
+      { settingsFail: { value: true } },
+    ),
+  );
+
   it.effect("uses stdout when exit 2 writes nothing to stderr", () =>
     withHook(
       "agentDispatch",

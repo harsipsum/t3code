@@ -80,6 +80,12 @@ type Verdict =
   | { readonly _tag: "allow"; readonly warning: string | undefined }
   | { readonly _tag: "block"; readonly reason: string };
 
+type Configured =
+  | { readonly _tag: "off" }
+  | { readonly _tag: "on"; readonly hook: CommandHook }
+  | { readonly _tag: "unreadable" };
+
+const UNREADABLE_SETTINGS = "T3 Code could not read its hook settings.";
 const MAX_HOOK_OUTPUT_BYTES = 64 * 1024;
 const MAX_REMEMBERED_ALLOWS = 512;
 
@@ -137,21 +143,30 @@ export const make = Effect.fn("CommandHooks.make")(function* () {
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const allowedDispatches = new Set<string>();
   // A failed settings read (say, of an unrelated secret) must not switch off a
-  // configured hook, so it falls back to the last configuration read.
-  let lastHooks: CommandHooksSettings = { agentDispatch: null, assistantReply: null };
+  // configured hook, so it falls back to the last configuration read. Before
+  // any read has worked, whether a hook is configured is unknown, so it blocks.
+  let lastHooks: CommandHooksSettings | undefined;
 
   const configured = (name: "agentDispatch" | "assistantReply") =>
     serverSettings.getSettings.pipe(
       Effect.map((settings) => {
         lastHooks = settings.hooks;
-        return settings.hooks;
+        return Option.some(settings.hooks);
       }),
       Effect.catch((error) =>
         Effect.logWarning("command-hook.settings-read-failed", { error }).pipe(
-          Effect.as(lastHooks),
+          Effect.as(Option.fromUndefinedOr(lastHooks)),
         ),
       ),
-      Effect.map((hooks) => Option.fromNullishOr(hooks[name])),
+      Effect.map(
+        Option.match({
+          onNone: (): Configured => ({ _tag: "unreadable" }),
+          onSome: (hooks): Configured => {
+            const hook = hooks[name];
+            return hook === null ? { _tag: "off" } : { _tag: "on", hook };
+          },
+        }),
+      ),
     );
   yield* configured("agentDispatch");
 
@@ -187,13 +202,16 @@ export const make = Effect.fn("CommandHooks.make")(function* () {
   const checkAgentDispatch: CommandHooksShape["checkAgentDispatch"] = (commandId, input) =>
     Effect.gen(function* () {
       const hook = yield* configured("agentDispatch");
-      if (Option.isNone(hook)) return;
+      if (hook._tag === "off") return;
       const resolved = yield* input;
       if (Option.isNone(resolved)) return;
+      if (hook._tag === "unreadable") {
+        return yield* new CommandHookBlockedError({ reason: UNREADABLE_SETTINGS });
+      }
       // Keyed by the text too: a retry under the same id with other text is asked again.
       const key = `${commandId}\u0000${resolved.value.text}`;
       if (allowedDispatches.has(key)) return;
-      const verdict = yield* run("agentDispatch", hook.value, {
+      const verdict = yield* run("agentDispatch", hook.hook, {
         ...resolved.value,
         commandId,
         command: encodeCommand(resolved.value.command),
@@ -211,8 +229,9 @@ export const make = Effect.fn("CommandHooks.make")(function* () {
   const checkAssistantReply: CommandHooksShape["checkAssistantReply"] = (input) =>
     Effect.gen(function* () {
       const hook = yield* configured("assistantReply");
-      if (Option.isNone(hook)) return Option.none();
-      const verdict = yield* run("assistantReply", hook.value, input);
+      if (hook._tag === "off") return Option.none();
+      if (hook._tag === "unreadable") return Option.some(UNREADABLE_SETTINGS);
+      const verdict = yield* run("assistantReply", hook.hook, input);
       return verdict._tag === "block" ? Option.some(verdict.reason) : Option.none();
     });
 

@@ -26,7 +26,7 @@ change them, because a hook runs a command on the environment. Changes apply wit
 `timeoutMs` defaults to 10 seconds and can be up to 120 seconds. Set a hook to `null`, or remove
 it, to turn it off. If `settings.json` stops parsing, for example because `timeoutMs` is out of
 range, the server falls back to default settings and hooks are off until it parses again; the
-server log says so.
+server log says so. If the settings can't be read at all, T3 Code keeps using the last hook settings it read, and blocks until it has read them once.
 
 T3 Code writes one JSON object to the command's standard input. The command runs without a
 shell, except that Windows runs `.cmd` and `.bat` files through `cmd.exe`, and it inherits the
