@@ -418,7 +418,8 @@ const postEvents = (auth: ClaudeAuth, sessionId: string, events: ReadonlyArray<u
 
 /**
  * Queues a user message. The uuid makes a retried POST a server-side duplicate
- * instead of a second message, and results name it in `user_message_uuids`.
+ * instead of a second message, so a send that may or may not have landed is
+ * retried with it; results name it in `user_message_uuids`.
  */
 export const sendUserMessage = (
   auth: ClaudeAuth,
@@ -442,6 +443,7 @@ export const sendUserMessage = (
       const sequence = Number(result?.sequence_num);
       return Number.isSafeInteger(sequence) ? sequence : undefined;
     }),
+    Effect.retry({ times: 2 }),
   );
 
 /** The same interrupt the Stop button on claude.ai sends. */

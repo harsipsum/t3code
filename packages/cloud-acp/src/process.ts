@@ -32,17 +32,27 @@ export interface BranchDiff {
  */
 export const readBranchDiff = (cwd: string, branch: string, base: string | undefined) =>
   Effect.gen(function* () {
-    // Fetching a named branch also updates its `origin/` tracking ref.
-    const fetched = yield* run(
-      "git",
-      ["fetch", "--no-tags", "origin", branch, ...(base === undefined ? [] : [base])],
-      { cwd, env: { GIT_TERMINAL_PROMPT: "0" } },
-    );
-    if (fetched.code !== 0) return undefined;
-    const baseRef = base === undefined ? "HEAD" : `origin/${base}`;
-    const diff = yield* run("git", ["diff", "--no-color", `${baseRef}...origin/${branch}`], {
-      cwd,
-    });
+    // Resolve each ref through FETCH_HEAD: `origin/<name>` only appears when the
+    // clone's refspec covers it, and this must not write refs of its own.
+    const fetchSha = (ref: string) =>
+      Effect.gen(function* () {
+        const fetched = yield* run("git", ["fetch", "--no-tags", "origin", ref], {
+          cwd,
+          env: { GIT_TERMINAL_PROMPT: "0" },
+        });
+        if (fetched.code !== 0) return undefined;
+        const sha = yield* run("git", ["rev-parse", "FETCH_HEAD"], { cwd });
+        return sha.code === 0 ? sha.stdout.trim() : undefined;
+      });
+    const head = yield* fetchSha(branch);
+    if (head === undefined) return undefined;
+    const baseSha = (base === undefined ? undefined : yield* fetchSha(base)) ?? "HEAD";
+    const threeDot = yield* run("git", ["diff", "--no-color", `${baseSha}...${head}`], { cwd });
+    // A shallow checkout may not reach the merge base; compare the tips instead.
+    const diff =
+      threeDot.code === 0
+        ? threeDot
+        : yield* run("git", ["diff", "--no-color", baseSha, head], { cwd });
     if (diff.code !== 0) return undefined;
     return diff.stdout.length > MAX_PATCH_BYTES
       ? { patch: diff.stdout.slice(0, MAX_PATCH_BYTES), truncated: true }
